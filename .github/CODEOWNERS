@@ -1,0 +1,7 @@
+# Global owners for code review
+* @epochquant/maintainers
+
+# Infrastructure & CI/CD
+.github/ @epochquant/maintainers
+Dockerfile @epochquant/maintainers
+launch_container_job.py @epochquant/maintainers

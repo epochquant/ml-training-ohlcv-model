@@ -1,0 +1,52 @@
+# ============================================================
+# BNB/USDT — 1-minute candles
+# GCS: gs://epochquant-training/processed/bnbusdt_1m.csv
+# ============================================================
+
+experiment:
+  name: "kronos_bnbusdt_1m"
+  seed: 42
+
+data:
+  data_path: "gs://epochquant-training/processed/bnbusdt_1m.csv"
+  gcs_project: null
+  symbol: "bnbusdt"
+  timeframe: "1m"
+  begin_time: "2024-12-13"
+  end_time:   "2026-06-06"
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  clip: 5.0
+
+model:
+  pretrained_tokenizer_path: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor_path: "NeoQuasar/Kronos-base"
+  lookback_window: 400
+  predict_window:  60
+  max_context:     512
+
+training:
+  tokenizer_epochs:         3
+  tokenizer_learning_rate:  1.0e-5
+  basemodel_epochs:          3
+  predictor_learning_rate:  1.0e-5
+  batch_size:          8
+  num_workers:         2
+  accumulation_steps:  1
+  adam_weight_decay:   1.0e-4
+  adam_beta1:          0.9
+  adam_beta2:          0.999
+  log_interval:        10
+
+output:
+  base_save_path:        "./output_models/bnbusdt_1m"
+  tokenizer_save_folder: "tokenizer_finetuned"
+  predictor_save_folder: "predictor_finetuned"
+  finetuned_tokenizer_path: null
+  finetuned_predictor_path: null
+
+flags:
+  pre_trained_tokenizer: true
+  pre_trained_predictor: true
+  use_comet: false

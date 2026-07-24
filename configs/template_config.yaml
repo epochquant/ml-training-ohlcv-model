@@ -1,0 +1,79 @@
+# ============================================================
+# Kronos Fine-Tuning Configuration — TEMPLATE
+# GCS Bucket: epochquant-training
+# Copy this file and edit for each symbol/timeframe.
+# ============================================================
+
+experiment:
+  name: "kronos_bnbusdt_1m"     # Used for log dirs and checkpoint folders
+  seed: 42
+
+# ---------------------------------------------------------------
+# Data — GCS paths
+# Convention: gs://epochquant-training/processed/<symbol>_<timeframe>.csv
+# ---------------------------------------------------------------
+data:
+  data_path: "gs://epochquant-training/processed/bnbusdt_1m.csv"
+  gcs_project: null               # Set to your GCP project ID if needed
+  symbol: "bnbusdt"
+  timeframe: "1m"
+  begin_time: "2024-01-01"
+  end_time: "2026-06-01"
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  clip: 5.0                       # Value clipping for normalization
+
+# ---------------------------------------------------------------
+# Model — HuggingFace pretrained base IDs
+# ---------------------------------------------------------------
+model:
+  pretrained_tokenizer_path: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor_path: "NeoQuasar/Kronos-base"
+  lookback_window: 400
+  predict_window:  60
+  max_context:     512
+
+# ---------------------------------------------------------------
+# Training hyperparameters
+# ---------------------------------------------------------------
+training:
+  # Tokenizer stage
+  tokenizer_epochs:         3
+  tokenizer_learning_rate:  1.0e-5
+
+  # Predictor stage
+  basemodel_epochs:          3
+  predictor_learning_rate:  1.0e-5
+
+  batch_size:          8
+  num_workers:         2
+  accumulation_steps:  1
+  adam_weight_decay:   1.0e-4
+  adam_beta1:          0.9
+  adam_beta2:          0.999
+  log_interval:        10
+
+# ---------------------------------------------------------------
+# Output paths
+# Use GCS for cloud training:
+#   base_save_path: "gs://epochquant-training/models/bnbusdt_1m_run1"
+# ---------------------------------------------------------------
+output:
+  base_save_path:             "./output_models/bnbusdt_1m_run1"
+  tokenizer_save_folder:      "tokenizer_finetuned"
+  predictor_save_folder:      "predictor_finetuned"
+
+  # Paths computed automatically from above — override if needed
+  finetuned_tokenizer_path:   null   # null = auto
+  finetuned_predictor_path:   null   # null = auto
+
+# ---------------------------------------------------------------
+# Flags
+# ---------------------------------------------------------------
+flags:
+  pre_trained_tokenizer:  true   # false = random init
+  pre_trained_predictor:  true   # false = random init
+  use_comet:              false  # Comet ML experiment tracking
+  comet_project:          "kronos-crypto"
+  comet_workspace:        ""
