@@ -1,4 +1,4 @@
-﻿# EpochQuant Kronos ML Training
+# EpochQuant Kronos ML Training
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
@@ -92,7 +92,62 @@ podman build -t ohlcv-model-training:local .
 podman run --rm ohlcv-model-training:local pytest
 ```
 
-### Step 3: CI/CD & GCP Artifact Registry Deployment
+### Step 3: Configure GCP Workload Identity Federation (GitHub Actions OIDC)
+
+To enable keyless OIDC authentication between GitHub Actions and Google Cloud, set up a Workload Identity Pool and Provider in GCP:
+
+#### 1. Enable IAM Credentials API
+```bash
+gcloud services enable iamcredentials.googleapis.com --project="YOUR_GCP_PROJECT_ID"
+```
+
+#### 2. Create Workload Identity Pool
+```bash
+gcloud iam workload-identity-pools create "github-pool" \
+  --project="YOUR_GCP_PROJECT_ID" \
+  --location="global" \
+  --display-name="GitHub Actions Pool"
+```
+
+#### 3. Create OIDC Provider
+```bash
+gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+  --project="YOUR_GCP_PROJECT_ID" \
+  --location="global" \
+  --workload-identity-pool="github-pool" \
+  --display-name="GitHub Provider" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+  --attribute-condition="assertion.repository_owner == 'YOUR_GITHUB_ORG'" \
+  --issuer-uri="https://token.actions.githubusercontent.com"
+```
+
+#### 4. Authorize Service Account Impersonation
+```bash
+gcloud iam service-accounts add-iam-policy-binding "YOUR_SERVICE_ACCOUNT@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com" \
+  --project="YOUR_GCP_PROJECT_ID" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/YOUR_GCP_PROJECT_ID/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_ORG/YOUR_REPO_NAME"
+```
+
+#### 5. Retrieve Provider Resource Name
+```bash
+gcloud iam workload-identity-pools providers describe "github-provider" \
+  --project="YOUR_GCP_PROJECT_ID" \
+  --location="global" \
+  --workload-identity-pool="github-pool" \
+  --format="value(name)"
+```
+
+#### 6. Configure GitHub Secrets
+In your GitHub repository, go to **Settings > Secrets and variables > Actions** and set the following repository secrets:
+
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`: Output string from Step 5 (`projects/.../providers/github-provider`)
+- `GCP_SERVICE_ACCOUNT`: `YOUR_SERVICE_ACCOUNT@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com`
+- `GCP_PROJECT_ID`: `YOUR_GCP_PROJECT_ID`
+- `GCP_REGION`: `YOUR_GCP_REGION` (e.g., `us-central1`)
+- `ARTIFACT_REPOSITORY`: `YOUR_ARTIFACT_REPOSITORY_NAME`
+
+### Step 4: CI/CD & GCP Artifact Registry Deployment
 
 Continuous Integration is pre-configured via [.github/workflows/docker-build-push.yml](.github/workflows/docker-build-push.yml). Upon pushing commits to `main`, GitHub Actions automatically authenticates via Workload Identity, builds the container, and pushes the tagged image to GCP Artifact Registry:
 
@@ -102,7 +157,7 @@ git commit -m "feat: optimize tokenizer quantization codebook"
 git push origin main
 ```
 
-### Step 4: Dispatch Serverless Training Job
+### Step 5: Dispatch Serverless Training Job
 
 Execute training on GCP using the containerized launcher script:
 
