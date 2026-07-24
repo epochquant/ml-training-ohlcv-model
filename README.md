@@ -123,10 +123,13 @@ gcloud iam workload-identity-pools providers create-oidc "github-provider" \
 
 #### 4. Authorize Service Account Impersonation
 ```bash
+# Get your numeric GCP Project Number
+PROJECT_NUMBER=$(gcloud projects describe "YOUR_GCP_PROJECT_ID" --format="value(projectNumber)")
+
 gcloud iam service-accounts add-iam-policy-binding "YOUR_SERVICE_ACCOUNT@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com" \
   --project="YOUR_GCP_PROJECT_ID" \
   --role="roles/iam.workloadIdentityUser" \
-  --member="principalSet://iam.googleapis.com/projects/YOUR_GCP_PROJECT_ID/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_ORG/YOUR_REPO_NAME"
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_ORG/YOUR_REPO_NAME"
 ```
 
 #### 5. Retrieve Provider Resource Name
