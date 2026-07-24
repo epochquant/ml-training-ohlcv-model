@@ -35,13 +35,15 @@ jobs:
 
       - name: Build Docker Image
         run: |
-          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/ohlcv-model-training:${{ github.sha }}"
-          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/ohlcv-model-training:latest"
+          REPO="${{ secrets.ARTIFACT_REPOSITORY || 'ohlcv-model-training' }}"
+          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training:${{ github.sha }}"
+          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training:latest"
           docker build -t "$IMAGE_URI" -t "$LATEST_URI" .
 
       - name: Push Container Image to Artifact Registry
         run: |
-          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/ohlcv-model-training:${{ github.sha }}"
-          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.ARTIFACT_REPOSITORY }}/ohlcv-model-training:latest"
+          REPO="${{ secrets.ARTIFACT_REPOSITORY || 'ohlcv-model-training' }}"
+          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training:${{ github.sha }}"
+          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training:latest"
           docker push "$IMAGE_URI"
           docker push "$LATEST_URI"
