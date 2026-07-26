@@ -18,7 +18,7 @@ WORKDIR /app
 
 # Install Python dependencies first for optimal Docker layer caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt gsutil
 
 # Copy Kronos ML training source code
 COPY model/ ./model/

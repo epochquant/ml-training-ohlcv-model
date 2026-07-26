@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Launch GCP Serverless Containerized Training Job on Vertex AI
 Uses pre-built Docker/Podman container images from Artifact Registry with Spot NVIDIA L4 GPUs.
@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--csv", type=str, help="Local CSV file path")
     parser.add_argument("--symbol", type=str, help="Trading Symbol (e.g., BNB_BTC)")
     parser.add_argument("--bucket", type=str, help="GCS Bucket URI (e.g., gs://epochquant-training)")
+    parser.add_argument("--region", type=str, help="GCP Region (e.g., us-central1, us-east1)")
     parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts")
     return parser.parse_args()
 
@@ -42,10 +43,11 @@ def main():
 
     # Load GCP defaults from environment (.env)
     project_id = get_env_var("GCP_PROJECT_ID", "dev-gemini-ai")
-    region = get_env_var("GCP_REGION", "us-central1")
+    repository_name = get_env_var("ARTIFACT_REGISTRY_IMAGE_PROJECT", "kronos-ml")
+    region = args.region or get_env_var("GCP_REGION", "us-central1")
     service_account = get_env_var("GCP_SERVICE_ACCOUNT", "kronos-notebook-sa@dev-gemini-ai.iam.gserviceaccount.com")
     default_bucket = get_env_var("GCS_BUCKET_NAME", "gs://epochquant-training")
-    container_image = get_env_var("ARTIFACT_REGISTRY_IMAGE", f"{region}-docker.pkg.dev/{project_id}/kronos-ml/ohlcv-model-training:latest")
+    container_image = get_env_var("ARTIFACT_REGISTRY_IMAGE", f"{region}-docker.pkg.dev/{project_id}/{repository_name}/ohlcv-model-training:latest")
 
     if args.non_interactive:
         csv_file = args.csv
@@ -60,8 +62,9 @@ def main():
         bucket = args.bucket or prompt("2. GCS Bucket to store training CSV", default=default_bucket)
         symbol = args.symbol or prompt("3. Symbol (e.g., BNB_BTC)")
 
-    if bucket.endswith("/"):
-        bucket = bucket[:-1]
+    bucket = bucket.rstrip("/")
+    if not bucket.startswith("gs://"):
+        bucket = f"gs://{bucket}"
 
     if not symbol:
         print("Error: Symbol cannot be empty.")

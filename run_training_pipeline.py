@@ -93,13 +93,57 @@ def run_torchrun(module_name: str, num_gpus: str):
         print(f"\n  {red('[FAIL]')} 'torchrun' command not found. Ensure PyTorch is installed and in your PATH.")
         sys.exit(1)
 
-def run_shell_command(cmd_string: str):
-    print(f"\n{dim('Executing:')} {cyan(cmd_string)}")
+def run_shell_command(cmd: str):
+    print(f"  {dim('Executing:')} {cyan(cmd)}")
     try:
-        subprocess.run(cmd_string, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True)
+        print(f"  {green('[OK]')} Command succeeded.")
     except subprocess.CalledProcessError as e:
         print(f"  {red('[FAIL]')} Command failed with exit code {e.returncode}.")
-        sys.exit(e.returncode)
+
+def download_from_gcs(gcs_uri: str, local_path: str) -> bool:
+    """Download a file from GCS using google-cloud-storage Python SDK with CLI fallback."""
+    try:
+        from google.cloud import storage
+        clean_uri = gcs_uri.replace("gs://", "")
+        bucket_name, blob_name = clean_uri.split("/", 1)
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.download_to_filename(local_path)
+        print(f"  {green('[OK]')} [GCS SDK] Downloaded {gcs_uri} -> {local_path}")
+        return True
+    except Exception as e:
+        print(f"  {yellow('[NOTICE]')} [GCS SDK] SDK download ({e}). Attempting CLI fallback...")
+        for cmd in [f"gcloud storage cp \"{gcs_uri}\" \"{local_path}\"", f"gsutil cp \"{gcs_uri}\" \"{local_path}\""]:
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+                return True
+            except Exception:
+                continue
+        return False
+
+def upload_to_gcs(local_path: str, gcs_uri: str) -> bool:
+    """Upload a file to GCS using google-cloud-storage Python SDK with CLI fallback."""
+    try:
+        from google.cloud import storage
+        clean_uri = gcs_uri.replace("gs://", "")
+        bucket_name, blob_name = clean_uri.split("/", 1)
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_filename(local_path)
+        print(f"  {green('[OK]')} [GCS SDK] Uploaded {local_path} -> {gcs_uri}")
+        return True
+    except Exception as e:
+        print(f"  {yellow('[NOTICE]')} [GCS SDK] SDK upload ({e}). Attempting CLI fallback...")
+        for cmd in [f"gcloud storage cp \"{local_path}\" \"{gcs_uri}\"", f"gsutil cp \"{local_path}\" \"{gcs_uri}\""]:
+            try:
+                subprocess.run(cmd, shell=True, check=True)
+                return True
+            except Exception:
+                continue
+        return False
 
 def main():
     import argparse
@@ -119,11 +163,10 @@ def main():
         if args.dataset_gs_uri:
             print(f"\n[Cloud Execution] Downloading dataset from {args.dataset_gs_uri}...")
             local_csv = "./downloaded_dataset.csv"
-            try:
-                subprocess.run(f"gsutil cp \"{args.dataset_gs_uri}\" \"{local_csv}\"", shell=True, check=True)
+            if download_from_gcs(args.dataset_gs_uri, local_csv):
                 dataset_path = local_csv
                 print(f"[Cloud Execution] Successfully downloaded to {dataset_path}")
-            except subprocess.CalledProcessError:
+            else:
                 print(red("\n  [FAIL] Failed to download dataset from GCS. Exiting."))
                 sys.exit(1)
         else:
@@ -250,7 +293,10 @@ def main():
     zip_filename = f"my_trained_kronos_v2_{symbol_upper}_{timestamp}.zip"
     
     run_shell_command(f"zip -r {zip_filename} ./output_models")
-    run_shell_command(f"gsutil cp {zip_filename} gs://epochquant-training/models/")
+    env_bucket = os.getenv("GCS_BUCKET_NAME", "epochquant-training")
+    if not env_bucket.startswith("gs://"):
+        env_bucket = f"gs://{env_bucket}"
+    upload_to_gcs(zip_filename, f"{env_bucket}/models/{zip_filename}")
 
     print(f"\n{green(bold('  [OK] All selected training pipelines complete.'))}\n")
 

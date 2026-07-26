@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import subprocess
 import time
@@ -21,8 +21,9 @@ def main():
         sys.exit(1)
         
     bucket = prompt("2. GCS Bucket to store the CSV", default="gs://epochquant-training")
-    if bucket.endswith("/"):
-        bucket = bucket[:-1]
+    bucket = bucket.rstrip("/")
+    if not bucket.startswith("gs://"):
+        bucket = f"gs://{bucket}"
         
     symbol = prompt("3. Symbol (e.g., BNB_BTC)")
     if not symbol:

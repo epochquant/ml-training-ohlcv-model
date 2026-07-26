@@ -176,6 +176,26 @@ The script will:
 
 ---
 
+## Data Processing Pipeline
+
+The repository includes an interactive CLI tool (`data/convert_json_to_csv.py`) to prepare and clean raw JSON/CSV OHLCV market data for the Kronos model. 
+
+### Key Features:
+- **Interactive CLI:** Guides you through input paths, output paths, and Google Cloud Storage (GCS) upload configurations.
+- **Data Standardization:** Converts Unix timestamps, sorts chronologically, and removes duplicates.
+- **Structural Break Segmentation:** Cleans data by filtering out problematic segments based on:
+  - **Price Jumps:** Splits segments when price changes exceed a threshold.
+  - **Illiquidity:** Splits segments during prolonged periods of near-zero volume.
+  - **Stagnation:** Splits segments when closing prices remain constant for too long.
+- **GCS Integration:** Optional automated uploading of the cleaned CSV directly to a GCS bucket using Application Default Credentials (ADC) or a specific Service Account key.
+
+**Usage:**
+```bash
+python data/convert_json_to_csv.py
+```
+
+---
+
 ## Code Base & Repository Structure
 
 ```
