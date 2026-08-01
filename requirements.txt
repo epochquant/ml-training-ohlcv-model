@@ -5,6 +5,8 @@ torch>=2.0.0
 einops==0.8.1
 tqdm==4.67.1
 matplotlib==3.9.3
+scikit-learn>=1.0
+
 
 # Model hub & serialization
 huggingface_hub>=0.33.1
