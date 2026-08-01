@@ -171,7 +171,12 @@ def main():
         local_kronos = "/tmp/pretrained_kronos"
         os.makedirs(local_kronos, exist_ok=True)
         fs = gcsfs.GCSFileSystem()
-        fs.get(args.pretrained_kronos.rstrip("/") + "/*", local_kronos + "/")
+        fs.get(args.pretrained_kronos.rstrip("/"), local_kronos, recursive=True)
+        # If gcsfs downloaded the directory into a subfolder, adjust path
+        if not os.path.exists(os.path.join(local_kronos, "config.json")):
+            subdirs = [os.path.join(local_kronos, d) for d in os.listdir(local_kronos) if os.path.isdir(os.path.join(local_kronos, d))]
+            if len(subdirs) == 1:
+                local_kronos = subdirs[0]
         args.pretrained_kronos = local_kronos
 
     if args.pretrained_tokenizer.startswith("gs://"):
@@ -179,7 +184,12 @@ def main():
         local_tokenizer = "/tmp/pretrained_tokenizer"
         os.makedirs(local_tokenizer, exist_ok=True)
         fs = gcsfs.GCSFileSystem()
-        fs.get(args.pretrained_tokenizer.rstrip("/") + "/*", local_tokenizer + "/")
+        fs.get(args.pretrained_tokenizer.rstrip("/"), local_tokenizer, recursive=True)
+        # If gcsfs downloaded the directory into a subfolder, adjust path
+        if not os.path.exists(os.path.join(local_tokenizer, "config.json")):
+            subdirs = [os.path.join(local_tokenizer, d) for d in os.listdir(local_tokenizer) if os.path.isdir(os.path.join(local_tokenizer, d))]
+            if len(subdirs) == 1:
+                local_tokenizer = subdirs[0]
         args.pretrained_tokenizer = local_tokenizer
 
     # 1. Load Data
