@@ -196,6 +196,90 @@ python data/convert_json_to_csv.py
 
 ---
 
+## Automated Event-Driven Training Trigger (Cloud Workflows + Eventarc)
+
+In addition to the manual [`launch_vertex_job.py`](launch_vertex_job.py) launcher, the repository ships a **serverless, zero-idle-cost, event-driven trigger** that automatically launches a GPU training VM whenever a dataset CSV is uploaded to a dedicated GCS folder.
+
+> **Manual script is preserved.** `launch_vertex_job.py` uploads to `training-data/` and is completely isolated from this trigger. Double-job execution is architecturally impossible — the workflow only listens on `training-data-workflow/`.
+
+### How It Works
+
+1. A dataset CSV (e.g. `BNB_BTC_1m.csv`) is uploaded to `gs://epochquant-training/training-data-workflow/`.
+2. **Eventarc** detects the `OBJECT_FINALIZE` event and triggers a **Cloud Workflow**.
+3. The Workflow validates the filename pattern (`SYMBOL_PAIR*.csv`) — non-conforming files are silently skipped with no VM created.
+4. The Workflow derives the trading symbol, builds the startup script, and calls the **Compute Engine REST API** to provision an NVIDIA L4 GPU VM.
+5. Zone fallback is built into the workflow — it automatically retries across `us-central1-b → us-central1-a → us-central1-c → us-east1-b → us-east1-c` if GPU capacity is constrained.
+6. The VM trains, saves outputs to `gs://epochquant-training/models/`, backs up logs, and **self-deletes** on completion.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant S as launch_vertex_job.py (manual)
+    participant GCS_M as gs://…/training-data/
+    participant GCS_W as gs://…/training-data-workflow/
+    participant EA as Eventarc
+    participant WF as Cloud Workflow
+    participant CE as Compute Engine (NVIDIA L4)
+
+    Note over User, S: Path A — Manual (unchanged)
+    User->>S: python launch_vertex_job.py
+    S->>GCS_M: Upload CSV (training-data/)
+    S->>CE: gcloud compute instances create
+
+    Note over GCS_W, CE: Path B — Automated (event-driven)
+    User->>GCS_W: Upload BNB_BTC_1m.csv (training-data-workflow/)
+    GCS_W->>EA: OBJECT_FINALIZE event
+    EA->>WF: Trigger workflow
+    WF->>WF: Validate filename pattern SYMBOL_PAIR*.csv
+    WF->>CE: Compute Engine API (zone fallback loop)
+    CE->>GCS_W: Save models + logs
+    CE->>CE: Self-delete on training completion
+```
+
+### Filename Convention (Required)
+
+Only files matching the pattern `SYMBOL_PAIR*.csv` trigger a job. Files with non-conforming names are silently skipped — no VM is created.
+
+| Upload path | Symbol derived | Job triggered? |
+|---|---|---|
+| `gs://…/training-data-workflow/BNB_BTC_1m.csv` | `BNB_BTC` | ✅ Yes |
+| `gs://…/training-data-workflow/ETHUSDT_4h.csv` | `ETHUSDT` | ✅ Yes |
+| `gs://…/training-data-workflow/checkpoint.csv` | — | ⏭ Skipped |
+| `gs://…/training-data/BNB_BTC.csv` (manual path) | — | ⏭ Skipped |
+
+### Deployment (One-Shot, No GCP Console Required)
+
+> **Prerequisite**: fill in all variables in `.env` (copy from `.env.example`). The script reads project ID, region, service account, bucket, and workflow names from `.env` — no secrets are hardcoded.
+
+```powershell
+# Run once from repository root (PowerShell)
+.\gcp\deploy_workflow.ps1
+```
+
+The script will:
+1. Enable required GCP APIs (`workflows`, `eventarc`, `compute`, `storage`).
+2. Grant 3 IAM role bindings to the service account via `gcloud` CLI (values sourced from `.env`).
+3. Create the `training-data-workflow/` folder in GCS if it does not exist.
+4. Deploy the Cloud Workflow from [`gcp/workflow.yaml`](gcp/workflow.yaml).
+5. Create the Eventarc GCS trigger.
+
+### Cost Breakdown
+
+| Component | Cost |
+|---|---|
+| Cloud Workflows | ~$0.01 per 1,000 executions |
+| Eventarc | Free (< 2.5M events/month) |
+| NVIDIA L4 Spot GPU VM | Same as manual launch |
+| **Idle infrastructure** | **$0.00** |
+
+### Teardown
+
+```powershell
+.\gcp\teardown_workflow.ps1
+```
+
+---
+
 ## Code Base & Repository Structure
 
 ```
@@ -218,12 +302,17 @@ ml-training-ohlcv-model/
 │   ├── train_tokenizer.py          # BSQ Tokenizer codebook trainer
 │   ├── train_predictor.py          # Autoregressive Predictor trainer
 │   └── utils/                      # DDP & logging utilities
+├── gcp/                            # GCP Infrastructure as Code (event-driven trigger)
+│   ├── workflow.yaml               # Cloud Workflows definition (no server required)
+│   ├── deploy_workflow.sh          # One-shot deployment: Eventarc + Workflow
+│   └── teardown_workflow.sh        # Safe cleanup / decommission script
 ├── .dockerignore                   # Build context exclusion rules
 ├── .env.example                    # Sanitized environment template
 ├── CODE_OF_CONDUCT.md              # Contributor Covenant v2.1
 ├── CONTRIBUTING.md                 # Development & PR guidelines
 ├── Dockerfile                      # Multi-stage GPU PyTorch container
 ├── launch_container_job.py         # Serverless Vertex AI job launcher
+├── launch_vertex_job.py            # Interactive GCE VM launcher (manual)
 ├── README.md                       # Documentation & Sponsor overview
 ├── requirements.txt                # Dependencies specification
 ├── run_training_pipeline.py        # Pipeline orchestrator CLI

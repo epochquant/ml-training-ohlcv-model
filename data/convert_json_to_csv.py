@@ -111,6 +111,7 @@ def process_single_json(file_path):
 
     # 3. Filter down to strictly what KronosPredictor requires
     result = df[['timestamps', 'open', 'high', 'low', 'close', 'volume']].copy()
+    result['symbol'] = file_path.stem
 
     # 4. Zero out volume field (uncomment to enable)
     ## result['volume'] = 0
@@ -118,7 +119,7 @@ def process_single_json(file_path):
     return result
 
 
-def split_on_structural_breaks(
+def _split_single_symbol(
     df,
     price_jump_threshold=0.10,
     min_segment_len=512,
@@ -186,6 +187,40 @@ def split_on_structural_breaks(
     return pd.concat(valid_segments, ignore_index=True)
 
 
+def split_on_structural_breaks(
+    df,
+    price_jump_threshold=0.10,
+    min_segment_len=512,
+    illiquid_threshold=None,
+    stagnant_threshold=None,
+    volume_near_zero_val=1e-8
+):
+    if 'symbol' in df.columns:
+        valid_segments = []
+        for sym, group in df.groupby('symbol'):
+            res = _split_single_symbol(
+                group, 
+                price_jump_threshold, 
+                min_segment_len, 
+                illiquid_threshold, 
+                stagnant_threshold, 
+                volume_near_zero_val
+            )
+            valid_segments.append(res)
+        if not valid_segments:
+            return pd.DataFrame(columns=[c for c in df.columns if c != 'segment_id'])
+        return pd.concat(valid_segments, ignore_index=True)
+    else:
+        return _split_single_symbol(
+            df,
+            price_jump_threshold,
+            min_segment_len,
+            illiquid_threshold,
+            stagnant_threshold,
+            volume_near_zero_val
+        )
+
+
 def build_kronos_dataset_from_folder(
     target_folder,
     output_csv_path,
@@ -212,8 +247,8 @@ def build_kronos_dataset_from_folder(
             print(red(f"  Error: Unsupported file format '{path_obj.suffix}'"))
             return False
     elif path_obj.is_dir():
-        json_files = list(path_obj.glob('*.json'))
-        csv_files = list(path_obj.glob('*.csv'))
+        json_files = list(path_obj.rglob('*.json'))
+        csv_files = list(path_obj.rglob('*.csv'))
     else:
         print(red(f"  Error: Path does not exist or is invalid: {target_folder}"))
         return False
@@ -253,6 +288,7 @@ def build_kronos_dataset_from_folder(
             
             df['timestamps'] = pd.to_datetime(df['timestamps'])
             df = df[target_cols].copy()
+            df['symbol'] = csv_file.stem
             df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
             dataframes.append(df)
             print(f"  {green('[+]')} {csv_file.name}  {dim(f'({len(df)} rows)')}")
@@ -268,11 +304,16 @@ def build_kronos_dataset_from_folder(
     master_df = pd.concat(dataframes, ignore_index=True)
 
     # CRITICAL: Sort chronologically to ensure the time-series sequence is intact
-    master_df = master_df.sort_values(by='timestamps').reset_index(drop=True)
-
-    # CRITICAL: Drop overlapping candles that might exist between file exports
-    initial_row_count = len(master_df)
-    master_df = master_df.drop_duplicates(subset=['timestamps'], keep='last')
+    if 'symbol' in master_df.columns:
+        master_df = master_df.sort_values(by=['symbol', 'timestamps']).reset_index(drop=True)
+        # CRITICAL: Drop overlapping candles that might exist between file exports
+        initial_row_count = len(master_df)
+        master_df = master_df.drop_duplicates(subset=['symbol', 'timestamps'], keep='last')
+    else:
+        master_df = master_df.sort_values(by='timestamps').reset_index(drop=True)
+        # CRITICAL: Drop overlapping candles that might exist between file exports
+        initial_row_count = len(master_df)
+        master_df = master_df.drop_duplicates(subset=['timestamps'], keep='last')
     duplicates_removed = initial_row_count - len(master_df)
 
     if duplicates_removed > 0:

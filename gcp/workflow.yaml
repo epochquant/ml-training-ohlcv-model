@@ -1,0 +1,252 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# gcp/workflow.yaml
+# Cloud Workflows definition — Kronos Event-Driven Training Trigger
+#
+# Triggered by Eventarc on: OBJECT_FINALIZE in gs://epochquant-training/
+# Listens exclusively to the prefix: training-data-workflow/
+#
+# Logic:
+#   1. Guard — object must be under training-data-workflow/
+#   2. Guard — file must end with .csv
+#   3. Guard — filename must match pattern SYMBOL_PAIR*.csv
+#   4. Derive trading symbol from first two underscore-separated tokens
+#   5. Build startup script (mirrors launch_vertex_job.py logic)
+#   6. Call Compute Engine REST API with zone fallback loop
+#      (us-central1-b → us-central1-a → us-central1-c → us-east1-b → us-east1-c)
+#   7. VM self-deletes on training completion via EXIT trap
+#
+# Manual usage of launch_vertex_job.py is completely unaffected.
+# ─────────────────────────────────────────────────────────────────────────────
+
+main:
+  params: [event]
+  steps:
+
+    # ─── 1. Initialize variables ─────────────────────────────────────────────
+    - initVars:
+        assign:
+          - projectId: "dev-gemini-ai"
+          - bucket: ${event.data.bucket}
+          - objectName: ${event.data.name}
+          - serviceAccount: "kronos-notebook-sa@dev-gemini-ai.iam.gserviceaccount.com"
+          - machineType: "g2-standard-4"
+          - imageFamily: "pytorch-2-9-cu129-ubuntu-2204-nvidia-580"
+          - imageProject: "deeplearning-platform-release"
+          - candidateZones:
+              - "us-central1-b"
+              - "us-central1-a"
+              - "us-central1-c"
+              - "us-east1-b"
+              - "us-east1-c"
+          - triggerPrefix: "training-data-workflow/"
+          - timestamp: ${string(int(sys.now()))}
+          - launched: false
+
+    # ─── 2. Guard: object must be under training-data-workflow/ ──────────────
+    - guardPrefix:
+        switch:
+          - condition: ${text.find_all(objectName, triggerPrefix)[0] == 0}
+            next: guardCsv
+        next: skipNotInPrefix
+
+    # ─── 3. Guard: must be a .csv file ───────────────────────────────────────
+    - guardCsv:
+        switch:
+          - condition: >
+              ${text.find_all(objectName, ".csv")[0] > 0}
+            next: extractBasename
+        next: skipNotCsv
+
+    # ─── 4. Extract basename from the GCS object path ────────────────────────
+    - extractBasename:
+        assign:
+          - parts: ${text.split(objectName, "/")}
+          - basename: ${parts[1]}
+
+    # ─── 5. Validate filename pattern: SYMBOL_PAIR*.csv ──────────────────────
+    #   Valid examples  : BNB_BTC_1m.csv, ETHUSDT_4h.csv, BTCUSDT_15m.csv
+    #   Invalid examples: checkpoint.csv, raw-data.csv, 20240101.csv, .keep
+    - guardPattern:
+        switch:
+          - condition: >
+              ${text.match_all(basename, "^[A-Z0-9]+_[A-Z0-9]+.*\\.csv$")}
+            next: extractSymbol
+        next: skipBadPattern
+
+    # ─── 6. Derive trading symbol from filename ───────────────────────────────
+    #   BNB_BTC_1m.csv  → symbol = BNB_BTC
+    #   ETHUSDT_4h.csv  → symbol = ETHUSDT_4H (trimmed to two tokens)
+    - extractSymbol:
+        assign:
+          - fileTokens: ${text.split(basename, "_")}
+          - symbol: ${text.upper(fileTokens[0] + "_" + fileTokens[1])}
+          - symbolSlug: ${text.lower(text.replace_all(symbol, "_", ""))}
+          - vmName: ${"kronos-auto-" + symbolSlug + "-" + timestamp}
+          - gcsDatasetUri: ${"gs://" + bucket + "/" + objectName}
+          - gcsBucketRoot: ${"gs://" + bucket}
+
+    # ─── 7. Build startup script ─────────────────────────────────────────────
+    #   Uses metadata server to retrieve VM name and zone at runtime
+    #   so that the EXIT trap can self-delete the correct instance.
+    - buildStartupScript:
+        assign:
+          - startupScript: |
+              #!/bin/bash
+              export PATH=/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+              exec > >(tee -a /var/log/kronos_training.log /dev/ttyS0) 2>&1
+
+              # Resolve instance identity from GCE metadata server
+              INSTANCE_NAME=$(curl -sf "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
+              INSTANCE_ZONE=$(curl -sf "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | awk -F'/' '{print $NF}')
+
+              cleanup() {
+                echo "Training finished or terminated. Shutting down VM ${INSTANCE_NAME}..."
+                gcloud compute instances delete "${INSTANCE_NAME}" --zone="${INSTANCE_ZONE}" --quiet \
+                  || sudo shutdown -h now
+              }
+              trap cleanup EXIT
+
+              echo "=== Kronos Auto-Training Started ==="
+              echo "Symbol     : __SYMBOL__"
+              echo "Dataset URI: __GCS_DATASET_URI__"
+              echo "VM Name    : ${INSTANCE_NAME}"
+              echo "Zone       : ${INSTANCE_ZONE}"
+
+              echo "Cloning repository..."
+              git clone https://github.com/epochquant/ml-training-ohlcv-model.git /opt/kronos
+              cd /opt/kronos
+
+              echo "Installing OS dependencies..."
+              apt-get update && apt-get install -y zip
+
+              if [ -f /opt/conda/bin/python ]; then
+                PYTHON_BIN="/opt/conda/bin/python"
+              else
+                PYTHON_BIN=$(which python3 || which python)
+              fi
+              echo "Using Python: $PYTHON_BIN"
+
+              echo "Installing Python dependencies..."
+              $PYTHON_BIN -m pip install -r requirements.txt
+
+              echo "Executing training pipeline..."
+              $PYTHON_BIN run_training_pipeline.py \
+                --symbol __SYMBOL__ \
+                --dataset-gs-uri __GCS_DATASET_URI__ \
+                --non-interactive
+
+              echo "Backing up execution log to GCS..."
+              gsutil cp /var/log/kronos_training.log __GCS_BUCKET_ROOT__/logs/${INSTANCE_NAME}.log
+              echo "=== Kronos Auto-Training Completed ==="
+
+    # ─── 8. Inject runtime values into startup script ────────────────────────
+    - injectScriptVars:
+        assign:
+          - startupScript: ${text.replace_all(startupScript, "__SYMBOL__", symbol)}
+          - startupScript: ${text.replace_all(startupScript, "__GCS_DATASET_URI__", gcsDatasetUri)}
+          - startupScript: ${text.replace_all(startupScript, "__GCS_BUCKET_ROOT__", gcsBucketRoot)}
+
+    # ─── 9. Zone fallback loop — Compute Engine REST API ─────────────────────
+    - launchVm:
+        for:
+          value: zone
+          in: ${candidateZones}
+          steps:
+            - tryZone:
+                try:
+                  steps:
+                    - callComputeApi:
+                        call: http.post
+                        args:
+                          url: >
+                            ${"https://compute.googleapis.com/compute/v1/projects/"
+                            + projectId + "/zones/" + zone + "/instances"}
+                          auth:
+                            type: OAuth2
+                          body:
+                            name: ${vmName}
+                            machineType: ${"zones/" + zone + "/machineTypes/" + machineType}
+                            disks:
+                              - boot: true
+                                autoDelete: true
+                                initializeParams:
+                                  sourceImage: >
+                                    ${"projects/" + imageProject
+                                    + "/global/images/family/" + imageFamily}
+                                  diskSizeGb: "100"
+                            networkInterfaces:
+                              - network: "global/networks/default"
+                                accessConfigs:
+                                  - type: "ONE_TO_ONE_NAT"
+                                    name: "External NAT"
+                            guestAccelerators:
+                              - acceleratorCount: 1
+                                acceleratorType: >
+                                  ${"zones/" + zone
+                                  + "/acceleratorTypes/nvidia-l4"}
+                            scheduling:
+                              onHostMaintenance: "TERMINATE"
+                              preemptible: false
+                            serviceAccounts:
+                              - email: ${serviceAccount}
+                                scopes:
+                                  - "https://www.googleapis.com/auth/cloud-platform"
+                            metadata:
+                              items:
+                                - key: "startup-script"
+                                  value: ${startupScript}
+                        result: createResult
+                    - markLaunched:
+                        assign:
+                          - launched: true
+                    - logSuccess:
+                        call: sys.log
+                        args:
+                          text: >
+                            ${"[Kronos] VM " + vmName + " launched in zone "
+                            + zone + " for symbol " + symbol}
+                          severity: "INFO"
+                    - returnSuccess:
+                        return: >
+                          ${"VM " + vmName + " launched in zone "
+                          + zone + " for symbol " + symbol}
+                except:
+                  as: e
+                  steps:
+                    - logZoneFailure:
+                        call: sys.log
+                        args:
+                          text: >
+                            ${"[Zone Fallback] Zone " + zone
+                            + " unavailable: " + string(e)}
+                          severity: "WARNING"
+
+    # ─── 10. Final check — raise error if all zones failed ───────────────────
+    - checkLaunched:
+        switch:
+          - condition: ${launched == true}
+            next: end
+        next: failAllZones
+
+    - failAllZones:
+        raise:
+          code: 503
+          message: >
+            "All candidate zones exhausted — no NVIDIA L4 GPU capacity
+            available. Please retry later."
+
+    # ─── Skip / early-exit return steps ──────────────────────────────────────
+    - skipNotInPrefix:
+        return: >
+          ${"Skipped: object '" + objectName
+          + "' is not under training-data-workflow/"}
+
+    - skipNotCsv:
+        return: >
+          ${"Skipped: object '" + objectName + "' is not a .csv file"}
+
+    - skipBadPattern:
+        return: >
+          ${"Skipped: filename '" + basename
+          + "' does not match required pattern SYMBOL_PAIR*.csv"
+          + " (e.g. BNB_BTC_1m.csv, ETHUSDT_4h.csv)"}
