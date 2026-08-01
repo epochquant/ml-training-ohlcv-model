@@ -30,6 +30,8 @@ def parse_args():
     parser.add_argument("--csv", type=str, help="Local CSV file path (labeled dataset)")
     parser.add_argument("--bucket", type=str, help="GCS Bucket URI (e.g., gs://epochquant-training)")
     parser.add_argument("--region", type=str, help="GCP Region (e.g., us-central1, us-east1)")
+    parser.add_argument("--pretrained_kronos", type=str, default="NeoQuasar/Kronos-base", help="Pretrained Kronos path or HuggingFace repo")
+    parser.add_argument("--pretrained_tokenizer", type=str, default="NeoQuasar/Kronos-Tokenizer-base", help="Pretrained Tokenizer path or HuggingFace repo")
     parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts")
     return parser.parse_args()
 
@@ -69,9 +71,8 @@ def main():
     gcs_dataset_uri = f"{bucket}/training-data-short/{csv_basename}"
     gcs_output_dir = f"{bucket}/short-models/kronos_short_usdt_head_{timestamp}"
 
-    # Default paths where the Kronos backbone is assumed to be stored from previous jobs
-    pretrained_kronos_uri = f"{bucket}/models/kronos_short_usdt/output_models/predictor_finetuned/checkpoints/best_model"
-    pretrained_tokenizer_uri = f"{bucket}/models/kronos_short_usdt/output_models/tokenizer_finetuned/checkpoints/best_model"
+    pretrained_kronos_uri = args.pretrained_kronos or f"{bucket}/models/kronos_short_usdt/output_models/predictor_finetuned/checkpoints/best_model"
+    pretrained_tokenizer_uri = args.pretrained_tokenizer or f"{bucket}/models/kronos_short_usdt/output_models/tokenizer_finetuned/checkpoints/best_model"
 
     # Step 1: Upload dataset to GCS
     if csv_file and os.path.exists(csv_file):

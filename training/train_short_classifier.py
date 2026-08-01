@@ -167,30 +167,38 @@ def main():
         args.dataset = local_dataset
 
     if args.pretrained_kronos.startswith("gs://"):
-        print(f"Downloading Kronos backbone from GCS: {args.pretrained_kronos}")
-        local_kronos = "/tmp/pretrained_kronos"
-        os.makedirs(local_kronos, exist_ok=True)
         fs = gcsfs.GCSFileSystem()
-        fs.get(args.pretrained_kronos.rstrip("/"), local_kronos, recursive=True)
-        # If gcsfs downloaded the directory into a subfolder, adjust path
-        if not os.path.exists(os.path.join(local_kronos, "config.json")):
-            subdirs = [os.path.join(local_kronos, d) for d in os.listdir(local_kronos) if os.path.isdir(os.path.join(local_kronos, d))]
-            if len(subdirs) == 1:
-                local_kronos = subdirs[0]
-        args.pretrained_kronos = local_kronos
+        gcs_clean = args.pretrained_kronos.rstrip("/")
+        if fs.exists(gcs_clean):
+            print(f"Downloading Kronos backbone from GCS: {args.pretrained_kronos}")
+            local_kronos = "/tmp/pretrained_kronos"
+            os.makedirs(local_kronos, exist_ok=True)
+            fs.get(gcs_clean, local_kronos, recursive=True)
+            if not os.path.exists(os.path.join(local_kronos, "config.json")):
+                subdirs = [os.path.join(local_kronos, d) for d in os.listdir(local_kronos) if os.path.isdir(os.path.join(local_kronos, d))]
+                if len(subdirs) == 1:
+                    local_kronos = subdirs[0]
+            args.pretrained_kronos = local_kronos
+        else:
+            print(f"Warning: GCS path '{args.pretrained_kronos}' not found. Falling back to 'NeoQuasar/Kronos-base'.")
+            args.pretrained_kronos = "NeoQuasar/Kronos-base"
 
     if args.pretrained_tokenizer.startswith("gs://"):
-        print(f"Downloading Tokenizer from GCS: {args.pretrained_tokenizer}")
-        local_tokenizer = "/tmp/pretrained_tokenizer"
-        os.makedirs(local_tokenizer, exist_ok=True)
         fs = gcsfs.GCSFileSystem()
-        fs.get(args.pretrained_tokenizer.rstrip("/"), local_tokenizer, recursive=True)
-        # If gcsfs downloaded the directory into a subfolder, adjust path
-        if not os.path.exists(os.path.join(local_tokenizer, "config.json")):
-            subdirs = [os.path.join(local_tokenizer, d) for d in os.listdir(local_tokenizer) if os.path.isdir(os.path.join(local_tokenizer, d))]
-            if len(subdirs) == 1:
-                local_tokenizer = subdirs[0]
-        args.pretrained_tokenizer = local_tokenizer
+        gcs_clean = args.pretrained_tokenizer.rstrip("/")
+        if fs.exists(gcs_clean):
+            print(f"Downloading Tokenizer from GCS: {args.pretrained_tokenizer}")
+            local_tokenizer = "/tmp/pretrained_tokenizer"
+            os.makedirs(local_tokenizer, exist_ok=True)
+            fs.get(gcs_clean, local_tokenizer, recursive=True)
+            if not os.path.exists(os.path.join(local_tokenizer, "config.json")):
+                subdirs = [os.path.join(local_tokenizer, d) for d in os.listdir(local_tokenizer) if os.path.isdir(os.path.join(local_tokenizer, d))]
+                if len(subdirs) == 1:
+                    local_tokenizer = subdirs[0]
+            args.pretrained_tokenizer = local_tokenizer
+        else:
+            print(f"Warning: GCS path '{args.pretrained_tokenizer}' not found. Falling back to 'NeoQuasar/Kronos-Tokenizer-base'.")
+            args.pretrained_tokenizer = "NeoQuasar/Kronos-Tokenizer-base"
 
     # 1. Load Data
     print(f"Loading dataset from {args.dataset}...")
