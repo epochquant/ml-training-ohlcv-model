@@ -245,6 +245,45 @@ def evaluate_features(model, dataloader, criterion, device, threshold: float = 0
     return avg_loss, precision, recall, f1, auc
 
 
+def upload_file_to_gcs(local_path: str, gcs_uri: str) -> bool:
+    """Uploads a local file to GCS using gcsfs with CLI fallbacks (gcloud storage / gsutil)."""
+    if not gcs_uri or not os.path.exists(local_path):
+        return False
+    
+    clean_gcs_uri = gcs_uri.rstrip("/")
+    if not clean_gcs_uri.startswith("gs://"):
+        clean_gcs_uri = f"gs://{clean_gcs_uri}"
+        
+    target_uri = f"{clean_gcs_uri}/{os.path.basename(local_path)}"
+    print(f"Uploading {local_path} -> {target_uri}...")
+
+    # Method 1: Try gcsfs
+    try:
+        fs = gcsfs.GCSFileSystem()
+        fs.put(local_path, target_uri)
+        print(f"  [OK] Successfully uploaded via gcsfs: {target_uri}")
+        return True
+    except Exception as e:
+        print(f"  [Notice] gcsfs upload failed ({e}). Trying CLI fallbacks...")
+
+    # Method 2: Try gcloud storage
+    try:
+        subprocess.run(f"gcloud storage cp \"{local_path}\" \"{target_uri}\"", shell=True, check=True)
+        print(f"  [OK] Successfully uploaded via gcloud storage: {target_uri}")
+        return True
+    except Exception:
+        pass
+
+    # Method 3: Try gsutil
+    try:
+        subprocess.run(f"gsutil cp \"{local_path}\" \"{target_uri}\"", shell=True, check=True)
+        print(f"  [OK] Successfully uploaded via gsutil: {target_uri}")
+        return True
+    except Exception:
+        print(f"  [ERROR] All GCS upload methods failed for {local_path}.")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train Kronos Short Reversal Classifier")
     parser.add_argument('--dataset', type=str, required=True, help="Path to labeled CSV dataset")
@@ -358,7 +397,8 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
     best_save_path = os.path.join(args.save_dir, "kronos_short_classifier.pt")
-    best_f1 = 0.0
+    latest_save_path = os.path.join(args.save_dir, "kronos_short_classifier_latest.pt")
+    best_f1 = -1.0  # Start at -1.0 so Epoch 1 is always saved as initial baseline
 
     # If backbone is frozen, pre-extract features for 99%+ speedup and cost reduction
     if freeze_backbone:
@@ -387,20 +427,27 @@ def main():
               f"Precision: {precision*100:.1f}% | Recall: {recall*100:.1f}% | "
               f"F1: {f1*100:.1f}% | ROC-AUC: {auc:.4f}")
 
-        if f1 > best_f1:
+        # Instant Checkpoint & Instant GCS Backup per Epoch to prevent data loss on crash/preemption
+        torch.save(model.state_dict(), latest_save_path)
+        if args.gcs_output_dir:
+            upload_file_to_gcs(latest_save_path, args.gcs_output_dir)
+
+        if f1 >= best_f1:
             best_f1 = f1
             torch.save(model.state_dict(), best_save_path)
             print(f"  [★] Saved new best model checkpoint to {best_save_path}")
+            if args.gcs_output_dir:
+                upload_file_to_gcs(best_save_path, args.gcs_output_dir)
 
     print("=" * 70)
     print(f"Training Complete! Best Validation F1-Score: {best_f1*100:.2f}%")
 
+    # Final backup check to ensure best or latest checkpoint is in GCS
     if args.gcs_output_dir:
-        gcs_uri = args.gcs_output_dir.rstrip("/")
-        print(f"\nUploading best model checkpoint to GCS: {gcs_uri}")
-        fs = gcsfs.GCSFileSystem()
-        fs.put(best_save_path, f"{gcs_uri}/kronos_short_classifier.pt")
-        print("Upload complete!")
+        if os.path.exists(best_save_path):
+            upload_file_to_gcs(best_save_path, args.gcs_output_dir)
+        elif os.path.exists(latest_save_path):
+            upload_file_to_gcs(latest_save_path, args.gcs_output_dir)
 
 
 if __name__ == '__main__':
