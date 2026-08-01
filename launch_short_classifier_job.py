@@ -105,7 +105,10 @@ def main():
         f"--dataset,{gcs_dataset_uri},"
         f"--pretrained_kronos,{pretrained_kronos_uri},"
         f"--pretrained_tokenizer,{pretrained_tokenizer_uri},"
-        f"--gcs_output_dir,{gcs_output_dir}\""
+        f"--gcs_output_dir,{gcs_output_dir},"
+        f"--batch_size,256,"
+        f"--num_workers,4,"
+        f"--freeze_backbone,True\""
     )
 
     try:
