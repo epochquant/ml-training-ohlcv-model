@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import gcsfs
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 
 # Ensure repository root directory is in sys.path
@@ -73,11 +73,11 @@ class ShortReversalDataset(Dataset):
         )
 
 
-def train_epoch(model, tokenizer, dataloader, optimizer, criterion, device):
+def train_epoch(model, tokenizer, dataloader, optimizer, criterion, device, epoch, total_epochs, log_interval=10):
     model.train()
     total_loss = 0.0
 
-    for x, x_stamp, y in dataloader:
+    for batch_idx, (x, x_stamp, y) in enumerate(dataloader):
         x = x.to(device)
         x_stamp = x_stamp.to(device)
         y = y.to(device)
@@ -96,6 +96,13 @@ def train_epoch(model, tokenizer, dataloader, optimizer, criterion, device):
         optimizer.step()
 
         total_loss += loss.item() * len(y)
+
+        if (batch_idx + 1) % log_interval == 0 or (batch_idx + 1) == len(dataloader):
+            lr = optimizer.param_groups[0]["lr"]
+            avg_loss = loss.item()
+            log_msg = (f"[Epoch {epoch}/{total_epochs}, Step {batch_idx+1}/{len(dataloader)}] "
+                       f"LR: {lr:.6f}, Loss: {avg_loss:.4f}")
+            print(log_msg)
 
     return total_loss / len(dataloader.dataset)
 
@@ -143,13 +150,111 @@ def evaluate(model, tokenizer, dataloader, criterion, device, threshold: float =
     return avg_loss, precision, recall, f1, auc
 
 
+def extract_dataset_features(dataloader, model, tokenizer, device):
+    model.eval()
+    tokenizer.eval()
+    all_features = []
+    all_labels = []
+
+    print("Pre-extracting features from frozen backbone...")
+    total_steps = len(dataloader)
+    with torch.no_grad():
+        for batch_idx, (x, x_stamp, y) in enumerate(dataloader):
+            x = x.to(device)
+            x_stamp = x_stamp.to(device)
+            
+            # Quantize inputs using KronosTokenizer
+            x_tokens = tokenizer.encode(x, half=True)
+            s1_ids, s2_ids = x_tokens[0], x_tokens[1]
+            
+            # Extract features from backbone
+            features = model.extract_features(s1_ids, s2_ids, stamp=x_stamp) # Shape: [B, d_model]
+            
+            all_features.append(features.cpu())
+            all_labels.append(y.cpu())
+            
+            if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_steps:
+                print(f"  [Extraction Progress] Step {batch_idx+1}/{total_steps}")
+                
+    return torch.cat(all_features, dim=0), torch.cat(all_labels, dim=0)
+
+
+def train_epoch_features(model, dataloader, optimizer, criterion, device, epoch, total_epochs, log_interval=10):
+    model.train()
+    total_loss = 0.0
+
+    for batch_idx, (features, y) in enumerate(dataloader):
+        features = features.to(device)
+        y = y.to(device)
+
+        optimizer.zero_grad()
+        logits = model.classifier(features)
+        loss = criterion(logits, y)
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * len(y)
+        
+        if (batch_idx + 1) % log_interval == 0 or (batch_idx + 1) == len(dataloader):
+            lr = optimizer.param_groups[0]["lr"]
+            avg_loss = loss.item()
+            log_msg = (f"[Epoch {epoch}/{total_epochs}, Step {batch_idx+1}/{len(dataloader)}] "
+                       f"LR: {lr:.6f}, Loss: {avg_loss:.4f}")
+            print(log_msg)
+
+    return total_loss / len(dataloader.dataset)
+
+
+def evaluate_features(model, dataloader, criterion, device, threshold: float = 0.5):
+    model.eval()
+    total_loss = 0.0
+    all_probs = []
+    all_targets = []
+
+    with torch.no_grad():
+        for features, y in dataloader:
+            features = features.to(device)
+            y = y.to(device)
+
+            logits = model.classifier(features)
+            loss = criterion(logits, y)
+            probs = torch.sigmoid(logits).squeeze(-1)
+
+            total_loss += loss.item() * len(y)
+            all_probs.extend(probs.cpu().numpy())
+            all_targets.extend(y.cpu().numpy())
+
+    if len(dataloader.dataset) == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.5
+
+    all_probs = np.array(all_probs)
+    all_targets = np.array(all_targets)
+    all_preds = (all_probs >= threshold).astype(int)
+
+    avg_loss = total_loss / max(1, len(dataloader.dataset))
+    precision = precision_score(all_targets, all_preds, zero_division=0)
+    recall = recall_score(all_targets, all_preds, zero_division=0)
+    f1 = f1_score(all_targets, all_preds, zero_division=0)
+    
+    try:
+        auc = roc_auc_score(all_targets, all_probs)
+    except Exception:
+        auc = 0.5
+
+    return avg_loss, precision, recall, f1, auc
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train Kronos Short Reversal Classifier")
     parser.add_argument('--dataset', type=str, required=True, help="Path to labeled CSV dataset")
     parser.add_argument('--epochs', type=int, default=10, help="Number of training epochs")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size")
+    parser.add_argument('--log_interval', type=int, default=10, help="Logging interval in steps")
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--save_dir', type=str, default="./output_models", help="Directory to save model weights")
+    parser.add_argument('--freeze_backbone', type=str, default="True", help="Freeze Kronos backbone (True/False)")
+    parser.add_argument('--num_workers', type=int, default=4, help="Number of dataloader workers")
     parser.add_argument('--pretrained_kronos', type=str, default="NeoQuasar/Kronos-base", help="Pretrained Kronos path")
     parser.add_argument('--pretrained_tokenizer', type=str, default="NeoQuasar/Kronos-Tokenizer-base", help="Pretrained Tokenizer path")
     parser.add_argument('--gcs_output_dir', type=str, default="", help="GCS URI to upload output model (e.g. gs://bucket/short_models/)")
@@ -218,8 +323,20 @@ def main():
     train_dataset = ShortReversalDataset(train_df, seq_len=400)
     val_dataset = ShortReversalDataset(val_df, seq_len=400)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers, 
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        pin_memory=True
+    )
 
     print(f"Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
     print(f"Train positive targets (Label=1): {train_df['label'].sum()} ({train_df['label'].mean()*100:.2f}%)")
@@ -230,22 +347,40 @@ def main():
     tokenizer = KronosTokenizer.from_pretrained(args.pretrained_tokenizer).to(device)
     kronos_base = Kronos.from_pretrained(args.pretrained_kronos).to(device)
 
-    # 3. Create Short Classifier
-    model = KronosShortClassifier(kronos_base, d_model=kronos_base.d_model, dropout=0.2).to(device)
+    freeze_backbone = args.freeze_backbone.lower() in ("true", "1", "yes")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # 3. Create Short Classifier
+    model = KronosShortClassifier(kronos_base, d_model=kronos_base.d_model, dropout=0.2, freeze_backbone=freeze_backbone).to(device)
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
     criterion = BinaryFocalLoss(alpha=0.25, gamma=2.0)
 
     os.makedirs(args.save_dir, exist_ok=True)
     best_save_path = os.path.join(args.save_dir, "kronos_short_classifier.pt")
     best_f1 = 0.0
 
+    # If backbone is frozen, pre-extract features for 99%+ speedup and cost reduction
+    if freeze_backbone:
+        train_features, train_labels = extract_dataset_features(train_loader, model, tokenizer, device)
+        val_features, val_labels = extract_dataset_features(val_loader, model, tokenizer, device)
+        
+        train_feat_dataset = TensorDataset(train_features, train_labels)
+        val_feat_dataset = TensorDataset(val_features, val_labels)
+        
+        train_feat_loader = DataLoader(train_feat_dataset, batch_size=args.batch_size, shuffle=True)
+        val_feat_loader = DataLoader(val_feat_dataset, batch_size=args.batch_size, shuffle=False)
+
     print("\nStarting Training...")
     print("=" * 70)
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_epoch(model, tokenizer, train_loader, optimizer, criterion, device)
-        val_loss, precision, recall, f1, auc = evaluate(model, tokenizer, val_loader, criterion, device)
+        if freeze_backbone:
+            train_loss = train_epoch_features(model, train_feat_loader, optimizer, criterion, device, epoch, args.epochs, args.log_interval)
+            val_loss, precision, recall, f1, auc = evaluate_features(model, val_feat_loader, criterion, device)
+        else:
+            train_loss = train_epoch(model, tokenizer, train_loader, optimizer, criterion, device, epoch, args.epochs, args.log_interval)
+            val_loss, precision, recall, f1, auc = evaluate(model, tokenizer, val_loader, criterion, device)
 
         print(f"Epoch {epoch:02d}/{args.epochs:02d} | "
               f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
