@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import subprocess
 import numpy as np
 import pandas as pd
 import torch
@@ -150,10 +151,32 @@ def main():
     parser.add_argument('--save_dir', type=str, default="./output_models", help="Directory to save model weights")
     parser.add_argument('--pretrained_kronos', type=str, default="NeoQuasar/Kronos-base", help="Pretrained Kronos path")
     parser.add_argument('--pretrained_tokenizer', type=str, default="NeoQuasar/Kronos-Tokenizer-base", help="Pretrained Tokenizer path")
+    parser.add_argument('--gcs_output_dir', type=str, default="", help="GCS URI to upload output model (e.g. gs://bucket/short_models/)")
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+
+    # 0. Handle GCS downloads if running on Vertex AI
+    if args.dataset.startswith("gs://"):
+        print(f"Downloading dataset from GCS: {args.dataset}")
+        local_dataset = "/tmp/dataset.csv"
+        subprocess.run(f"gsutil cp \"{args.dataset}\" \"{local_dataset}\"", shell=True, check=True)
+        args.dataset = local_dataset
+
+    if args.pretrained_kronos.startswith("gs://"):
+        print(f"Downloading Kronos backbone from GCS: {args.pretrained_kronos}")
+        local_kronos = "/tmp/pretrained_kronos"
+        os.makedirs(local_kronos, exist_ok=True)
+        subprocess.run(f"gsutil -m cp -r \"{args.pretrained_kronos}/*\" \"{local_kronos}\"", shell=True, check=True)
+        args.pretrained_kronos = local_kronos
+
+    if args.pretrained_tokenizer.startswith("gs://"):
+        print(f"Downloading Tokenizer from GCS: {args.pretrained_tokenizer}")
+        local_tokenizer = "/tmp/pretrained_tokenizer"
+        os.makedirs(local_tokenizer, exist_ok=True)
+        subprocess.run(f"gsutil -m cp -r \"{args.pretrained_tokenizer}/*\" \"{local_tokenizer}\"", shell=True, check=True)
+        args.pretrained_tokenizer = local_tokenizer
 
     # 1. Load Data
     print(f"Loading dataset from {args.dataset}...")
@@ -214,6 +237,12 @@ def main():
 
     print("=" * 70)
     print(f"Training Complete! Best Validation F1-Score: {best_f1*100:.2f}%")
+
+    if args.gcs_output_dir:
+        gcs_uri = args.gcs_output_dir.rstrip("/")
+        print(f"\nUploading best model checkpoint to GCS: {gcs_uri}")
+        subprocess.run(f"gsutil cp \"{best_save_path}\" \"{gcs_uri}/kronos_short_classifier.pt\"", shell=True, check=True)
+        print("Upload complete!")
 
 
 if __name__ == '__main__':

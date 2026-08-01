@@ -145,7 +145,7 @@ def process_dataset(input_path: str, output_csv: str, min_drop_pct: float = 3.0)
     if input_path.is_file():
         files = [input_path]
     elif input_path.is_dir():
-        files = list(input_path.glob('*.json')) + list(input_path.glob('*.csv'))
+        files = list(input_path.rglob('*.json')) + list(input_path.rglob('*.csv'))
     else:
         raise FileNotFoundError(f"Input path not found: {input_path}")
 
@@ -183,7 +183,7 @@ def process_dataset(input_path: str, output_csv: str, min_drop_pct: float = 3.0)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Generate labeled dataset for Kronos Short Reversal Classifier.")
     parser.add_argument('--input', type=str, required=True, help="Path to input JSON/CSV file or directory.")
-    parser.add_argument('--output', type=str, default="./dataset/kronos_short_labeled.csv", help="Path to output CSV.")
+    parser.add_argument('--output', type=str, default="./output_csv/_changeit_master_short_labeled.csv", help="Path to output CSV.")
     parser.add_argument('--min_drop', type=float, default=3.0, help="Minimum percentage drop for top reversal label (default: 3.0%).")
 
     args = parser.parse_args()

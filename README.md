@@ -174,6 +174,20 @@ The script will:
 3. Execute Phase B (Tokenizer) and Phase C (Predictor) fine-tuning in <10 seconds container boot time.
 4. Export saved checkpoints to `gs://epochquant-training/models/`.
 
+### Step 6: Train Short Reversal Classifier (Optional)
+
+If you want to train the specialized **Short Reversal Classifier** (which attaches a classification head to a frozen Kronos backbone to predict blow-off tops for short trades), use the dedicated launcher script:
+
+```bash
+python launch_short_classifier_job.py
+```
+
+The script will guide you to:
+1. Provide the local labeled dataset CSV (e.g., `./output_csv/master_short_labeled.csv`).
+2. Provide your GCS bucket.
+
+It will upload the dataset to `gs://<bucket>/training-data-short/`, pull the pre-trained Kronos backbone from your bucket, and execute the lightweight training on an **NVIDIA L4 Spot GPU**. The resulting classifier head weights (`kronos_short_classifier.pt`) will be saved cleanly to a separate prefix at `gs://<bucket>/short-models/` to prevent overwriting your base foundation models.
+
 ---
 
 ## Data Processing Pipeline
