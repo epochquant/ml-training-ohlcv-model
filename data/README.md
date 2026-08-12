@@ -58,3 +58,5 @@ df = load_dataset("data/processed/bnbusdt_1m.csv")
 # From local JSON folder
 df = load_dataset("data/raw/bnbusdt/")
 ```
+
+See the root [README.md](../README.md#step-7-train-the-high-volatility-model-variant-optional) for `launch_high_volatility_job.py` usage (the high-volatility `high-volatility-model` training job launcher).

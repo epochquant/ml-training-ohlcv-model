@@ -1,0 +1,71 @@
+# ============================================================
+# DOGE/USDT — 1-minute candles — high-volatility-model variant
+# GCS: gs://epochquant-training/high-volatility/training-data/dogeusdt_1m.csv
+# ============================================================
+
+experiment:
+  name: "kronos_hv_dogeusdt_1m"
+  seed: 42
+  model_variant: "high-volatility-model"
+
+data:
+  data_path: "gs://epochquant-training/high-volatility/training-data/dogeusdt_1m.csv"
+  gcs_project: null
+  symbol: "dogeusdt"
+  timeframe: "1m"
+  begin_time: "2024-01-01"
+  end_time:   "2026-06-01"
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  clip: 5.0
+
+model:
+  pretrained_tokenizer_path: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor_path: "NeoQuasar/Kronos-base"
+  lookback_window: 400
+  predict_window:  60
+  max_context:     512
+  n_regime_features: 3
+
+high_volatility:
+  normalization_mode: "logreturn"
+  soft_clip: true
+  regime_embedding:
+    enabled: true
+    atr_window: 14
+    trend_window: 50
+    vol_window: 20
+  label_mode: "atr_relative"
+  k_drop: 2.5
+  k_upside: 0.6
+  n_extra_features: 4
+  predict_quantiles: [0.1, 0.5, 0.9]
+  sample_count: 20
+
+training:
+  tokenizer_epochs:         3
+  tokenizer_learning_rate:  1.0e-5
+  basemodel_epochs:          3
+  predictor_learning_rate:  1.0e-5
+  batch_size:          8
+  num_workers:         2
+  accumulation_steps:  1
+  adam_weight_decay:   1.0e-4
+  adam_beta1:          0.9
+  adam_beta2:          0.999
+  log_interval:        10
+
+output:
+  base_save_path:        "./output_models_hv/dogeusdt_1m"
+  tokenizer_save_folder: "tokenizer_finetuned"
+  predictor_save_folder: "predictor_finetuned"
+  finetuned_tokenizer_path: null
+  finetuned_predictor_path: null
+
+flags:
+  pre_trained_tokenizer: true
+  pre_trained_predictor: true
+  use_comet: false
+  comet_project: "kronos-crypto-hv"
+  comet_workspace: ""
