@@ -1,0 +1,58 @@
+name: Build and Push High-Volatility Training Container to GCP Artifact Registry
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'hv-v*.*.*' ]
+    paths:
+      - 'model/high_volatility/**'
+      - 'training/*_hv.py'
+      - 'src/data/label_short_signals_hv.py'
+      - 'configs/high_volatility_template.yaml'
+      - 'configs/high_volatility/**'
+      - 'Dockerfile.hv'
+      - 'run_training_pipeline_hv.py'
+      - '.github/workflows/docker-build-push-hv.yml'
+
+jobs:
+  build-and-push:
+    name: Build & Push High-Volatility Docker Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: 'access_token'
+
+      - name: Log in to GCP Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build Docker Image
+        run: |
+          REPO="${{ secrets.ARTIFACT_REPOSITORY || 'ohlcv-model-training' }}"
+          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training-hv:${{ github.sha }}"
+          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training-hv:latest"
+          docker build -f Dockerfile.hv -t "$IMAGE_URI" -t "$LATEST_URI" .
+
+      - name: Push Container Image to Artifact Registry
+        run: |
+          REPO="${{ secrets.ARTIFACT_REPOSITORY || 'ohlcv-model-training' }}"
+          IMAGE_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training-hv:${{ github.sha }}"
+          LATEST_URI="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/ohlcv-model-training-hv:latest"
+          docker push "$IMAGE_URI"
+          docker push "$LATEST_URI"

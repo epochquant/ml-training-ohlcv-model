@@ -188,6 +188,60 @@ The script will guide you to:
 
 It will upload the dataset to `gs://<bucket>/training-data-short/`, pull the pre-trained Kronos backbone from your bucket, and execute the lightweight training on an **NVIDIA L4 Spot GPU**. The resulting classifier head weights (`kronos_short_classifier.pt`) will be saved cleanly to a separate prefix at `gs://<bucket>/short-models/` to prevent overwriting your base foundation models.
 
+### Step 7: Train the High-Volatility Model Variant (Optional)
+
+`launch_high_volatility_job.py` submits a Vertex AI custom training job for the **`high-volatility-model`** variant — a separate model line, Docker image (`ohlcv-model-training-hv`), and GCS namespace from the base pipeline above, intended for memecoins/low-cap alts with extreme intraday swings (e.g. DOGEUSDT, PEPEUSDT). It never collides with or overwrites base-model artifacts: same GCP project/region, but a distinct image, job-name prefix, and `high-volatility/` GCS prefix.
+
+**Prerequisites:**
+- `gcloud` CLI authenticated with access to the target GCP project.
+- A processed CSV for the symbol you want to train (see [Column Schema](data/README.md#column-schema-processed-csv)).
+- Optionally, these `.env` variables (CLI flags override them):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GCP_PROJECT_ID` | GCP project to submit the job to | `dev-gemini-ai` |
+| `ARTIFACT_REGISTRY_IMAGE_PROJECT` | Artifact Registry repo name | `kronos-ml` |
+| `GCP_REGION` | Vertex AI region | `us-central1` |
+| `GCS_BUCKET_NAME` | Default GCS bucket | `gs://epochquant-training` |
+| `ARTIFACT_REGISTRY_IMAGE_HV` | Full HV image URI override | `<region>-docker.pkg.dev/<project>/<repo>/ohlcv-model-training-hv:latest` |
+
+**Interactive** (prompts for anything not passed as a flag):
+
+```bash
+python launch_high_volatility_job.py
+```
+
+```
+1. Local CSV file path: data/processed/dogeusdt_1m.csv
+2. GCS Bucket to store training CSV [gs://epochquant-training]:
+3. Symbol (e.g., DOGEUSDT): DOGEUSDT
+```
+
+**Non-interactive** (for scripts/CI — all three values must be supplied up front):
+
+```bash
+python launch_high_volatility_job.py \
+    --csv data/processed/dogeusdt_1m.csv \
+    --symbol DOGEUSDT \
+    --bucket gs://epochquant-training \
+    --non-interactive
+```
+
+**CLI flags:**
+
+| Flag | Required | Description |
+|---|---|---|
+| `--csv` | Yes | Local path to the processed CSV to train on |
+| `--symbol` | Yes | Trading symbol, e.g. `DOGEUSDT`, `PEPEUSDT` |
+| `--bucket` | No | GCS bucket URI; falls back to `GCS_BUCKET_NAME`/`gs://epochquant-training` |
+| `--region` | No | GCP region; falls back to `GCP_REGION`/`us-central1` |
+| `--non-interactive` | No | Skip prompts; fails fast if `--csv`/`--symbol` are missing |
+
+The script will:
+1. Upload `--csv` to `gs://<bucket>/high-volatility/training-data/<csv-basename>` (via `gcloud storage cp`, falling back to `gsutil cp`).
+2. Submit a Vertex AI custom job named `kronos-hv-container-train-<symbol>-<timestamp>` running the `ohlcv-model-training-hv:latest` image on a Spot `g2-standard-4` + 1x `NVIDIA_L4`, passing `--symbol`, `--dataset-gs-uri`, and `--non-interactive` into the container.
+3. Save trained checkpoints under `gs://<bucket>/high-volatility/models/`.
+
 ---
 
 ## Data Processing Pipeline
