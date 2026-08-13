@@ -17,6 +17,8 @@ try:
 except ImportError:
     pass
 
+from gcp_job_utils import submit_custom_job_with_fallback
+
 def get_env_var(key, default=""):
     return os.getenv(key, default)
 
@@ -86,39 +88,39 @@ def main():
     # Step 2: Submit Vertex AI Custom Training Job with Container Spec
     print(f"\n[2/3] Submitting Serverless Container Job '{job_name}' to Vertex AI...")
     print(f" -> Project: {project_id}")
-    print(f" -> Region: {region}")
+    print(f" -> Primary Region: {region}")
     print(f" -> Container Image: {container_image}")
     print(f" -> GPU: 1x NVIDIA L4 (g2-standard-4 Spot Instance)")
-    
-    # Vertex AI Custom Job creation command
-    # Overriding the command to explicitly call python with our short classifier script
-    gcloud_cmd = (
-        f"gcloud ai custom-jobs create "
-        f"--project={project_id} "
-        f"--region={region} "
-        f"--display-name={job_name} "
-        f"--worker-pool-spec=machine-type=g2-standard-4,replica-count=1,"
-        f"accelerator-type=NVIDIA_L4,accelerator-count=1,"
-        f"container-image-uri={container_image} "
-        f"--command=\"python\" "
-        f"--args=\"training/train_short_classifier.py,"
-        f"--dataset,{gcs_dataset_uri},"
-        f"--pretrained_kronos,{pretrained_kronos_uri},"
-        f"--pretrained_tokenizer,{pretrained_tokenizer_uri},"
-        f"--gcs_output_dir,{gcs_output_dir},"
-        f"--batch_size,256,"
-        f"--num_workers,4,"
-        f"--freeze_backbone,True\""
-    )
 
+    # Overriding the container command to explicitly call python with our short classifier script
     try:
-        result = subprocess.run(gcloud_cmd, shell=True, check=True)
+        placed_region, job_resource = submit_custom_job_with_fallback(
+            project_id=project_id,
+            job_name=job_name,
+            machine_type="g2-standard-4",
+            accelerator_type="NVIDIA_L4",
+            accelerator_count=1,
+            container_image=container_image,
+            command=["python"],
+            container_args=[
+                "training/train_short_classifier.py",
+                "--dataset", gcs_dataset_uri,
+                "--pretrained_kronos", pretrained_kronos_uri,
+                "--pretrained_tokenizer", pretrained_tokenizer_uri,
+                "--gcs_output_dir", gcs_output_dir,
+                "--batch_size", "256",
+                "--num_workers", "4",
+                "--freeze_backbone", "True",
+            ],
+            primary_region=region,
+        )
         print(f"\n=======================================================")
         print(f" Success! Container Job '{job_name}' submitted.")
+        print(f" Placed in region: {placed_region}")
         print(f" Vertex AI is running container on Spot NVIDIA L4 GPU.")
         print(f" Output Model will be saved to: {gcs_output_dir}/")
         print(f"=======================================================\n")
-    except subprocess.CalledProcessError as e:
+    except RuntimeError as e:
         print(f"\nError launching Vertex AI Custom Job: {e}")
         sys.exit(1)
 
