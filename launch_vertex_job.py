@@ -12,7 +12,7 @@ def prompt(label, default=""):
 
 def main():
     print("===========================================")
-    print("  Launch GCP Self-Deleting Training VM")
+    print("  Launch GCP Self-Deleting Training VM (On-Demand L4 GPU)")
     print("===========================================\n")
     
     csv_file = prompt("1. Local CSV file path")
@@ -52,7 +52,7 @@ def main():
     provisioned_zone = None
     
     for zone in candidate_zones:
-        print(f"\n[3/3] Attempting to provision GCE VM '{vm_name}' (1x NVIDIA L4 GPU) in zone {zone}...")
+        print(f"\n[3/3] Attempting to provision GCE VM '{vm_name}' (1x NVIDIA L4 GPU - On-Demand) in zone {zone}...")
         
         startup_script = f"""#!/bin/bash
 export PATH=/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH

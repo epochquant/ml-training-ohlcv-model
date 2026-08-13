@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument("--csv", type=str, help="Local CSV file path (labeled dataset)")
     parser.add_argument("--bucket", type=str, help="GCS Bucket URI (e.g., gs://epochquant-training)")
     parser.add_argument("--region", type=str, help="GCP Region (e.g., us-central1, us-east1)")
+    parser.add_argument("--spot", action="store_true", default=False, help="Use Spot/Preemptible GPU instances (default: False, runs On-Demand)")
     parser.add_argument("--pretrained_kronos", type=str, default="NeoQuasar/Kronos-base", help="Pretrained Kronos path or HuggingFace repo")
     parser.add_argument("--pretrained_tokenizer", type=str, default="NeoQuasar/Kronos-Tokenizer-base", help="Pretrained Tokenizer path or HuggingFace repo")
     parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts")
@@ -40,16 +41,18 @@ def parse_args():
 def main():
     args = parse_args()
 
-    print("=======================================================")
-    print("  Launch Short Classifier Training Job (Vertex AI / L4)")
-    print("=======================================================\n")
-
     # Load GCP defaults from environment (.env)
     project_id = get_env_var("GCP_PROJECT_ID", "dev-gemini-ai")
     repository_name = get_env_var("ARTIFACT_REGISTRY_IMAGE_PROJECT", "kronos-ml")
     region = args.region or get_env_var("GCP_REGION", "us-central1")
     default_bucket = get_env_var("GCS_BUCKET_NAME", "gs://epochquant-training")
     container_image = get_env_var("ARTIFACT_REGISTRY_IMAGE", f"{region}-docker.pkg.dev/{project_id}/{repository_name}/ohlcv-model-training:latest")
+    use_spot = args.spot or get_env_var("GCP_USE_SPOT", "false").lower() in ("true", "1", "yes")
+    gpu_tier = "Spot" if use_spot else "On-Demand"
+
+    print("=======================================================")
+    print(f"  Launch Short Classifier Training Job (Vertex AI / L4 - {gpu_tier})")
+    print("=======================================================\n")
 
     if args.non_interactive:
         csv_file = args.csv
@@ -90,7 +93,7 @@ def main():
     print(f" -> Project: {project_id}")
     print(f" -> Primary Region: {region}")
     print(f" -> Container Image: {container_image}")
-    print(f" -> GPU: 1x NVIDIA L4 (g2-standard-4 Spot Instance)")
+    print(f" -> GPU: 1x NVIDIA L4 (g2-standard-4 {gpu_tier} Instance)")
 
     # Overriding the container command to explicitly call python with our short classifier script
     try:
@@ -113,11 +116,12 @@ def main():
                 "--freeze_backbone", "True",
             ],
             primary_region=region,
+            use_spot=use_spot,
         )
         print(f"\n=======================================================")
         print(f" Success! Container Job '{job_name}' submitted.")
         print(f" Placed in region: {placed_region}")
-        print(f" Vertex AI is running container on Spot NVIDIA L4 GPU.")
+        print(f" Vertex AI is running container on {gpu_tier} NVIDIA L4 GPU.")
         print(f" Output Model will be saved to: {gcs_output_dir}/")
         print(f"=======================================================\n")
     except RuntimeError as e:
