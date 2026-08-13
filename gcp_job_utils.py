@@ -28,10 +28,10 @@ import time
 import yaml
 
 # Verified against `gcloud compute accelerator-types list --filter="name=nvidia-l4"`
-# on 2026-08-12 (returned us-central1, us-east1, us-east4, us-west1, us-west4,
+# on 2026-08-12 (returned us-central1, us-east1, us-east4, us-west1,
 # plus several non-US regions). Re-verify before relying on this list long-term —
 # GPU availability per region changes over time.
-DEFAULT_FALLBACK_REGIONS = ["us-east1", "us-east4", "us-west1", "us-west4"]
+DEFAULT_FALLBACK_REGIONS = ["us-east1", "us-east4", "us-west1"]
 
 # Signatures of errors that are genuinely our fault (bad args, bad image,
 # missing permissions) and won't be fixed by trying a different region.
@@ -118,11 +118,16 @@ def submit_custom_job_with_fallback(
     service_account=None,
     primary_region="us-central1",
     fallback_regions=None,
-    use_spot=True,
+    use_spot=None,
     per_region_timeout_s=25 * 60,
     poll_interval_s=30,
 ):
     """Submit a Vertex AI custom job, retrying in fallback regions on capacity errors.
+
+    If `use_spot` is None, it is read from the `GCP_USE_SPOT` environment variable
+    (default: False, for Standard On-Demand instances).
+    If Spot is requested but GCP rejects the job due to unavailable preemptible
+    quota, it automatically falls back to Standard On-Demand execution.
 
     Returns (region, job_resource_name) on success. Raises RuntimeError if every
     candidate region is exhausted, or if a submitted job fails for a reason that
@@ -130,10 +135,14 @@ def submit_custom_job_with_fallback(
     """
     candidate_regions = build_candidate_regions(primary_region, fallback_regions)
 
+    if use_spot is None:
+        use_spot = os.getenv("GCP_USE_SPOT", "false").lower() in ("true", "1", "yes")
+
     container_spec = {"imageUri": container_image, "args": list(container_args)}
     if command:
         container_spec["command"] = list(command)
 
+    current_spot = use_spot
     job_spec = {
         "workerPoolSpecs": [
             {
@@ -147,7 +156,7 @@ def submit_custom_job_with_fallback(
             }
         ],
         "scheduling": {
-            "strategy": "SPOT" if use_spot else "STANDARD",
+            "strategy": "SPOT" if current_spot else "STANDARD",
             "disableRetries": True,
         },
     }
@@ -156,7 +165,7 @@ def submit_custom_job_with_fallback(
 
     attempts = []
     for region in candidate_regions:
-        print(f"  [gcp_job_utils] Attempting region '{region}'...")
+        print(f"  [gcp_job_utils] Attempting region '{region}' (strategy: {job_spec['scheduling']['strategy']})...")
         config_path = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -171,9 +180,19 @@ def submit_custom_job_with_fallback(
             )
             data, err = _run_json(create_cmd)
             if data is None:
-                attempts.append((region, f"submission failed: {err}"))
-                print(f"  [gcp_job_utils] Region '{region}' submission failed: {err}")
-                continue
+                # If submission failed due to preemptible/spot quota exhaustion, auto-fallback to STANDARD
+                if current_spot and ("preemptible" in (err or "").lower() or "custom_model_training_preemptible" in (err or "").lower()):
+                    print(f"  [gcp_job_utils] Spot/Preemptible GPU quota unavailable in '{region}'. Falling back to STANDARD (On-Demand)...")
+                    job_spec["scheduling"]["strategy"] = "STANDARD"
+                    current_spot = False
+                    with open(config_path, "w") as f_retry:
+                        yaml.safe_dump(job_spec, f_retry)
+                    data, err = _run_json(create_cmd)
+
+                if data is None:
+                    attempts.append((region, f"submission failed: {err}"))
+                    print(f"  [gcp_job_utils] Region '{region}' submission failed: {err}")
+                    continue
 
             job_resource = data.get("name")
             if not job_resource:
