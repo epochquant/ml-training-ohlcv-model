@@ -17,6 +17,8 @@ try:
 except ImportError:
     pass
 
+from gcp_job_utils import submit_custom_job_with_fallback
+
 def get_env_var(key, default=""):
     return os.getenv(key, default)
 
@@ -88,34 +90,28 @@ def main():
     # Step 2: Submit Vertex AI Custom Training Job with Container Spec
     print(f"\n[2/3] Submitting Serverless Container Job '{job_name}' to Vertex AI...")
     print(f" -> Project: {project_id}")
-    print(f" -> Region: {region}")
+    print(f" -> Primary Region: {region}")
     print(f" -> Container Image: {container_image}")
     print(f" -> GPU: 1x NVIDIA L4 (g2-standard-4 Spot Instance)")
 
-    # Candidate zones for GPU availability
-    candidate_zones = ["us-central1-b", "us-central1-a", "us-central1-c", "us-east1-b"]
-    
-    # Vertex AI Custom Job creation command using container specification
-    gcloud_cmd = (
-        f"gcloud ai custom-jobs create "
-        f"--project={project_id} "
-        f"--region={region} "
-        f"--display-name={job_name} "
-        f"--worker-pool-spec=machine-type=g2-standard-4,replica-count=1,"
-        f"accelerator-type=NVIDIA_L4,accelerator-count=1,"
-        f"container-image-uri={container_image} "
-        f"--args=\"--symbol,{symbol_upper},--dataset-gs-uri,{gcs_dataset_uri},--non-interactive\""
-    )
-
     try:
-        result = subprocess.run(gcloud_cmd, shell=True, check=True)
+        placed_region, job_resource = submit_custom_job_with_fallback(
+            project_id=project_id,
+            job_name=job_name,
+            machine_type="g2-standard-4",
+            accelerator_type="NVIDIA_L4",
+            accelerator_count=1,
+            container_image=container_image,
+            container_args=["--symbol", symbol_upper, "--dataset-gs-uri", gcs_dataset_uri, "--non-interactive"],
+            primary_region=region,
+        )
         print(f"\n=======================================================")
         print(f" Success! Container Job '{job_name}' submitted.")
+        print(f" Placed in region: {placed_region}")
         print(f" Vertex AI is running container on Spot NVIDIA L4 GPU.")
-        print(f" Startup Latency: < 10 seconds.")
         print(f" Outputs saved to: {bucket}/models/")
         print(f"=======================================================\n")
-    except subprocess.CalledProcessError as e:
+    except RuntimeError as e:
         print(f"\nError launching Vertex AI Custom Job: {e}")
         sys.exit(1)
 
