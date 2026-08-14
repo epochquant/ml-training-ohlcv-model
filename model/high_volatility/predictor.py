@@ -103,18 +103,24 @@ class HighVolatilityPredictor(KronosPredictor):
     Combines Area A (log-return/robust normalization + soft clip, replacing the
     base predictor's raw-price z-score + hard clip), Area D (returns the raw
     per-sample ensemble so callers can request quantiles instead of only a
-    mean), and Area B (computes and forwards a per-window regime vector).
+    mean), and Area B (computes and forwards an 8-feature multi-scale regime vector).
     """
 
     def __init__(self, model, tokenizer, device=None, max_context=512, clip=5.0,
-                 normalization_mode="logreturn", soft_clip=True, use_regime=True):
+                 normalization_mode="logreturn", soft_clip=True, use_regime=True,
+                 n_regime_features: int = 8, aggregation_mode: str = "mean"):
         super().__init__(model, tokenizer, device=device, max_context=max_context, clip=clip)
         self.normalization_mode = normalization_mode
         self.soft_clip = soft_clip
         self.use_regime = use_regime
+        self.n_regime_features = getattr(model, "n_regime_features", n_regime_features)
+        self.aggregation_mode = aggregation_mode
 
-    def _prepare_regime(self, x_raw_batch):
-        regime_batch = np.stack([compute_regime_vector(x_raw) for x_raw in x_raw_batch], axis=0)
+    def _prepare_regime(self, x_raw_batch, taker_idx=None):
+        regime_batch = np.stack([
+            compute_regime_vector(x_raw, taker_idx=taker_idx, n_features=self.n_regime_features)
+            for x_raw in x_raw_batch
+        ], axis=0)
         return regime_batch
 
     def generate_with_quantiles(self, x, x_stamp, y_stamp, pred_len, T=1.0, top_k=0,
@@ -134,21 +140,25 @@ class HighVolatilityPredictor(KronosPredictor):
         return preds[:, :, -pred_len:, :]
 
     def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_k=0, top_p=0.9,
-                sample_count=20, verbose=True, return_quantiles=False, quantiles=(0.1, 0.5, 0.9)):
+                sample_count=20, verbose=True, return_quantiles=False, quantiles=(0.1, 0.5, 0.9),
+                aggregation_mode=None):
         results = self.predict_batch(
             [df], [x_timestamp], [y_timestamp], pred_len, T=T, top_k=top_k, top_p=top_p,
             sample_count=sample_count, verbose=verbose, return_quantiles=return_quantiles,
-            quantiles=quantiles,
+            quantiles=quantiles, aggregation_mode=aggregation_mode,
         )
         return results[0]
 
     def predict_batch(self, df_list, x_timestamp_list, y_timestamp_list, pred_len, T=1.0,
                        top_k=0, top_p=0.9, sample_count=20, verbose=True,
-                       return_quantiles=False, quantiles=(0.1, 0.5, 0.9)):
+                       return_quantiles=False, quantiles=(0.1, 0.5, 0.9),
+                       aggregation_mode=None):
         price_cols = ['open', 'high', 'low', 'close']
         vol_col, amt_col = 'volume', 'amount'
+        agg_mode = aggregation_mode or self.aggregation_mode
 
         df_list_filled = []
+        taker_available = False
         for df in df_list:
             df = df.copy()
             for col in price_cols:
@@ -159,16 +169,27 @@ class HighVolatilityPredictor(KronosPredictor):
                 df[amt_col] = 0.0
             if amt_col not in df.columns and vol_col in df.columns:
                 df[amt_col] = df[vol_col] * df[price_cols].mean(axis=1)
+            if 'takerBuyBaseAssetVolume' in df.columns:
+                taker_available = True
             if df[price_cols + [vol_col, amt_col]].isnull().values.any():
                 raise ValueError("Input DataFrame contains NaN values in price or volume columns.")
             df_list_filled.append(df)
 
         feature_cols = price_cols + [vol_col, amt_col]
-        x_raw_batch = [df[feature_cols].values.astype(np.float64) for df in df_list_filled]
+        
+        # Build raw array (including optional taker volume as extra column for regime computation)
+        x_raw_batch = []
+        for df in df_list_filled:
+            if taker_available and 'takerBuyBaseAssetVolume' in df.columns:
+                raw_mat = df[feature_cols + ['takerBuyBaseAssetVolume']].values.astype(np.float64)
+            else:
+                raw_mat = df[feature_cols].values.astype(np.float64)
+            x_raw_batch.append(raw_mat)
 
         x_norm_list, stats_list = [], []
         for x_raw in x_raw_batch:
-            x_norm, stats = normalize_window(x_raw, mode=self.normalization_mode, clip=self.clip,
+            x_price_vol = x_raw[:, :len(feature_cols)]
+            x_norm, stats = normalize_window(x_price_vol, mode=self.normalization_mode, clip=self.clip,
                                               soft_clip=self.soft_clip)
             x_norm_list.append(x_norm)
             stats_list.append(stats)
@@ -176,7 +197,8 @@ class HighVolatilityPredictor(KronosPredictor):
 
         regime_batch = None
         if self.use_regime:
-            regime_vec = self._prepare_regime(x_raw_batch)
+            taker_idx = 6 if taker_available else None
+            regime_vec = self._prepare_regime(x_raw_batch, taker_idx=taker_idx)
             seq_len = x_norm_batch.shape[1]
             regime_batch = np.repeat(regime_vec[:, None, :], seq_len, axis=1)
 
@@ -206,7 +228,18 @@ class HighVolatilityPredictor(KronosPredictor):
                     out[label] = pd.DataFrame(q_arr[qi], columns=feature_cols, index=y_index)
                 results.append(out)
             else:
-                mean_arr = denorm_samples.mean(axis=0)
-                results.append(pd.DataFrame(mean_arr, columns=feature_cols, index=y_index))
+                if agg_mode == "median":
+                    agg_arr = np.median(denorm_samples, axis=0)
+                elif agg_mode == "regime_aligned" and regime_batch is not None:
+                    # In a macro uptrend (ret_240m > 0 and overext_macro >= -0.5), use upper median / p60 to avoid drag
+                    r_vec = regime_batch[b, -1]
+                    is_bullish_context = (len(r_vec) >= 5 and r_vec[4] > 0.05) or (len(r_vec) >= 3 and r_vec[2] > -0.2)
+                    if is_bullish_context:
+                        agg_arr = np.quantile(denorm_samples, 0.60, axis=0)
+                    else:
+                        agg_arr = denorm_samples.mean(axis=0)
+                else:
+                    agg_arr = denorm_samples.mean(axis=0)
+                results.append(pd.DataFrame(agg_arr, columns=feature_cols, index=y_index))
 
         return results

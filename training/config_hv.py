@@ -58,10 +58,16 @@ class ConfigHV:
         self.clip = 5.0
 
         # --- Area B: volatility regime embedding ---
-        self.n_regime_features = 3
+        self.n_regime_features = int(os.getenv("HV_N_REGIME_FEATURES", "8"))
         self.atr_window = float(os.getenv("HV_ATR_WINDOW", "14"))
         self.trend_window = float(os.getenv("HV_TREND_WINDOW", "50"))
+        self.macro_trend_window = float(os.getenv("HV_MACRO_TREND_WINDOW", "200"))
+        self.macro_ret_window = float(os.getenv("HV_MACRO_RET_WINDOW", "240"))
         self.vol_window = float(os.getenv("HV_VOL_WINDOW", "20"))
+
+        # --- Area C: loss weighting & sampling ---
+        self.asymmetric_loss_weight = float(os.getenv("HV_ASYMMETRIC_LOSS_WEIGHT", "2.5"))
+        self.stratified_sampling = os.getenv("HV_STRATIFIED_SAMPLING", "true").strip().lower() != "false"
 
         # --- Area D: uncertainty-aware forecasting ---
         self.sample_count = int(os.getenv("HV_SAMPLE_COUNT", "20"))

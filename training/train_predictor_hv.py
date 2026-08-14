@@ -46,11 +46,37 @@ def create_dataloaders(config: dict, rank: int, world_size: int):
     return train_loader, val_loader, train_dataset, valid_dataset
 
 
+def compute_weighted_hv_loss(model_head, logits, targets, batch_x=None, asym_weight=2.5):
+    """Computes cross-entropy loss with optional asymmetric weighting for explosive upward breakout moves."""
+    s1_logits, s2_logits = logits[0], logits[1]
+    s1_targets, s2_targets = targets[0], targets[1]
+
+    ce_s1_raw = F.cross_entropy(s1_logits.reshape(-1, model_head.vocab_s1), s1_targets.reshape(-1), reduction='none')
+    ce_s2_raw = F.cross_entropy(s2_logits.reshape(-1, model_head.vocab_s2), s2_targets.reshape(-1), reduction='none')
+    ce_raw = (ce_s1_raw + ce_s2_raw) / 2.0
+
+    if asym_weight > 1.0 and batch_x is not None:
+        # Target returns on close price (index 3) across the sequence
+        target_returns = batch_x[:, 1:, 3] - batch_x[:, :-1, 3]
+        weights = torch.ones_like(target_returns)
+        # Apply higher penalty on large upward breakout candles
+        pos_mask = target_returns > 0.0
+        weights[pos_mask] = asym_weight
+
+        flat_weights = weights.reshape(-1)
+        loss = (ce_raw * flat_weights).sum() / (flat_weights.sum() + 1e-8)
+        s1_loss = (ce_s1_raw * flat_weights).sum() / (flat_weights.sum() + 1e-8)
+        s2_loss = (ce_s2_raw * flat_weights).sum() / (flat_weights.sum() + 1e-8)
+    else:
+        loss = ce_raw.mean()
+        s1_loss = ce_s1_raw.mean()
+        s2_loss = ce_s2_raw.mean()
+
+    return loss, s1_loss, s2_loss
+
+
 def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_size):
-    """Predictor training loop -- identical structure to
-    training.train_predictor.train_model, plumbing the per-window regime
-    vector (Area B) into HighVolatilityKronos.forward alongside the existing
-    time stamp."""
+    """Predictor training loop with multi-scale regime embedding and asymmetric breakout loss."""
     start_time = time.time()
     if rank == 0:
         effective_bs = config['batch_size'] * world_size
@@ -73,6 +99,7 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
     best_val_loss = float('inf')
     dt_result = {}
     batch_idx_global = 0
+    asym_weight = config.get('asymmetric_loss_weight', 2.5)
 
     for epoch_idx in range(config['epochs']):
         epoch_start_time = time.time()
@@ -94,7 +121,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger, rank, world_
             token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
             logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :], batch_regime[:, :-1, :])
-            loss, s1_loss, s2_loss = model.module.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
+            loss, s1_loss, s2_loss = compute_weighted_hv_loss(
+                model.module.head, logits, token_out, batch_x=batch_x, asym_weight=asym_weight
+            )
 
             optimizer.zero_grad()
             loss.backward()

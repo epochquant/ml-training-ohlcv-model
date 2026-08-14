@@ -7,8 +7,9 @@ from model.high_volatility.regime import RegimeEmbedding
 
 class HighVolatilityKronos(Kronos):
     """High-volatility variant of Kronos with an additional zero-initialized
-    regime embedding (Area B / B1) that injects a continuous volatility-regime
-    signal (ATR%, overextension, volume-ratio -- see model/high_volatility/regime.py)
+    regime embedding (Area B / B1) that injects a continuous multi-scale
+    volatility-regime signal (ATR%, short & macro overextension, multi-timeframe
+    returns, volume-ratio, taker-ratio, wick rejection -- see model/high_volatility/regime.py)
     alongside the existing temporal embedding.
 
     Zero-initialization means this is a true no-op immediately after
@@ -16,7 +17,7 @@ class HighVolatilityKronos(Kronos):
     contributing once fine-tuned.
     """
 
-    def __init__(self, *args, n_regime_features: int = 3, **kwargs):
+    def __init__(self, *args, n_regime_features: int = 8, **kwargs):
         super().__init__(*args, **kwargs)
         self.n_regime_features = n_regime_features
         self.regime_emb = RegimeEmbedding(n_regime_features, self.d_model)
@@ -55,7 +56,7 @@ class HighVolatilityKronos(Kronos):
         return s1_logits, x
 
 
-def load_hv_kronos_from_base(pretrained_path: str, n_regime_features: int = 3) -> "HighVolatilityKronos":
+def load_hv_kronos_from_base(pretrained_path: str, n_regime_features: int = 8) -> "HighVolatilityKronos":
     """Warm-start a HighVolatilityKronos from a base Kronos checkpoint.
 
     Does not use HighVolatilityKronos.from_pretrained directly -- the

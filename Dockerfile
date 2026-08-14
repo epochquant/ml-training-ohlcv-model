@@ -25,6 +25,7 @@ COPY model/ ./model/
 COPY training/ ./training/
 COPY data/ ./data/
 COPY configs/ ./configs/
+COPY tests/ ./tests/
 COPY run_training_pipeline.py .
 
 # Set default execution entrypoint

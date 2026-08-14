@@ -28,6 +28,7 @@ COPY training/ ./training/
 COPY data/ ./data/
 COPY src/ ./src/
 COPY configs/ ./configs/
+COPY tests/ ./tests/
 COPY run_training_pipeline_hv.py .
 
 # Set default execution entrypoint
