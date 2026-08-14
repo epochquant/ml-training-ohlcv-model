@@ -41,6 +41,10 @@ data/processed/*
 *.h5
 *.hdf5
 
+# Allow test datasets and fixtures in tests/data/
+!tests/data/**
+!tests/data/*
+
 # Model checkpoints (live in GCS — do not commit)
 output_models/*
 !output_models/.gitkeep
