@@ -18,6 +18,5 @@ data/processed/
 *.zip
 *.tar.gz
 notebooks/
-tests/
 .idea/
 .vscode/
