@@ -7,6 +7,17 @@ from model.high_volatility.normalization import normalize_window, denormalize_co
 from model.high_volatility.regime import compute_regime_vector
 
 
+def safe_calc_time_stamps(x_timestamp):
+    """Robust timestamp decomposition supporting pd.Series, pd.DatetimeIndex, and lists."""
+    if isinstance(x_timestamp, pd.DatetimeIndex):
+        ts_series = pd.Series(x_timestamp)
+    elif isinstance(x_timestamp, pd.Series):
+        ts_series = x_timestamp
+    else:
+        ts_series = pd.Series(pd.to_datetime(x_timestamp))
+    return calc_time_stamps(ts_series)
+
+
 def hv_auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context,
                                   pred_len, clip=5, T=1.0, top_k=0, top_p=0.99,
                                   sample_count=5, regime=None, verbose=False):
@@ -203,10 +214,10 @@ class HighVolatilityPredictor(KronosPredictor):
             regime_batch = np.repeat(regime_vec[:, None, :], seq_len, axis=1)
 
         x_stamp_batch = np.stack(
-            [calc_time_stamps(ts).values.astype(np.float32) for ts in x_timestamp_list], axis=0
+            [safe_calc_time_stamps(ts).values.astype(np.float32) for ts in x_timestamp_list], axis=0
         )
         y_stamp_batch = np.stack(
-            [calc_time_stamps(ts).values.astype(np.float32) for ts in y_timestamp_list], axis=0
+            [safe_calc_time_stamps(ts).values.astype(np.float32) for ts in y_timestamp_list], axis=0
         )
 
         preds = self.generate_with_quantiles(
