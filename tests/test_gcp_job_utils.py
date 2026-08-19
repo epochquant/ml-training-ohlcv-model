@@ -13,11 +13,31 @@ class TestGCPJobUtils(unittest.TestCase):
         primary = "us-central1"
         candidates = build_candidate_regions(primary)
         self.assertEqual(candidates[0], "us-central1")
-        self.assertIn("us-east1", candidates)
-        self.assertIn("us-east4", candidates)
         self.assertIn("us-west1", candidates)
         self.assertIn("europe-west4", candidates)
+        self.assertIn("asia-east1", candidates)
         self.assertEqual(len(candidates), len(set(candidates)))
+
+    def test_build_candidate_regions_timezone_americas_day(self):
+        # At 15:00 UTC (Daytime in Americas, off-peak in Europe & Asia),
+        # European and Asian regions should be prioritized before other US regions
+        primary = "us-central1"
+        candidates = build_candidate_regions(primary, current_utc_hour=15)
+        self.assertEqual(candidates[0], "us-central1")
+        # europe-west4 should come before us-west1 in daytime fallback
+        eu_idx = candidates.index("europe-west4")
+        us_idx = candidates.index("us-west1")
+        self.assertLess(eu_idx, us_idx)
+
+    def test_build_candidate_regions_timezone_americas_night(self):
+        # At 04:00 UTC (Night in Americas, off-peak in Americas),
+        # North American regions should come before European regions
+        primary = "us-central1"
+        candidates = build_candidate_regions(primary, current_utc_hour=4)
+        self.assertEqual(candidates[0], "us-central1")
+        us_idx = candidates.index("us-west1")
+        eu_idx = candidates.index("europe-west4")
+        self.assertLess(us_idx, eu_idx)
 
     def test_build_candidate_regions_custom(self):
         candidates = build_candidate_regions("us-east1", ["us-central1", "us-east1", "us-west1"])

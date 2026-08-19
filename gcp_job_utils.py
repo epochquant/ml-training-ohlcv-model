@@ -25,12 +25,24 @@ import subprocess
 import tempfile
 import time
 
+from datetime import datetime, timezone
+
 import yaml
 
-# Verified against `gcloud compute accelerator-types list --filter="name=nvidia-l4"`
-# GPU availability per region changes over time.
-# Note: us-west4 does not support g2-standard-4 (NVIDIA L4).
-DEFAULT_FALLBACK_REGIONS = ["us-east1", "us-east4", "us-west1", "europe-west4"]
+# Verified against `gcloud compute accelerator-types list` and project quota limits
+REGIONS_EUROPE = ["europe-west4", "europe-west2"]
+REGIONS_NORTH_AMERICA = ["us-central1", "us-west1", "northamerica-northeast1", "us-east1"]
+REGIONS_ASIA = ["asia-east1", "asia-northeast1"]
+
+# Default global pool prioritizing regions with verified quota and high Spot GPU availability
+DEFAULT_FALLBACK_REGIONS = [
+    "europe-west4",
+    "us-central1",
+    "us-west1",
+    "northamerica-northeast1",
+    "asia-east1",
+    "europe-west2",
+]
 
 # Signatures of errors that are genuinely our fault (bad args, bad image,
 # missing permissions) and won't be fixed by trying a different region.
@@ -64,9 +76,29 @@ def _run_json(cmd):
         return None, result.stdout.strip()
 
 
-def build_candidate_regions(primary_region, fallback_regions=None):
-    fallback_regions = fallback_regions if fallback_regions is not None else DEFAULT_FALLBACK_REGIONS
-    ordered = [primary_region] + [r for r in fallback_regions if r != primary_region]
+def build_candidate_regions(primary_region, fallback_regions=None, current_utc_hour=None):
+    """Build an ordered list of candidate GCP regions.
+    
+    If `fallback_regions` is explicitly provided, respect that list.
+    Otherwise, order default regions using a timezone-aware heuristic:
+    - During Americas business/peak hours (12:00 - 23:59 UTC):
+      Prioritize European & Asian regions (where it is evening/night and Spot GPUs are idle).
+    - During Americas night/off-peak hours (00:00 - 11:59 UTC):
+      Prioritize North American regions first, followed by European and Asian regions.
+    """
+    if fallback_regions is not None:
+        raw_pool = fallback_regions
+    else:
+        if current_utc_hour is None:
+            current_utc_hour = datetime.now(timezone.utc).hour
+        
+        # 12:00 to 23:59 UTC -> Daytime in Americas, Night/Off-peak in Europe & Asia
+        if 12 <= current_utc_hour < 24:
+            raw_pool = REGIONS_EUROPE + REGIONS_ASIA + REGIONS_NORTH_AMERICA
+        else:
+            raw_pool = REGIONS_NORTH_AMERICA + REGIONS_EUROPE + REGIONS_ASIA
+
+    ordered = [primary_region] + [r for r in raw_pool if r != primary_region]
     seen = set()
     unique = []
     for region in ordered:
@@ -88,7 +120,12 @@ def _cancel_job(project_id, region, job_id):
 
 def _poll_job_state(project_id, region, job_id, timeout_s, poll_interval_s):
     """Poll a submitted job until it starts running, fails, or the timeout elapses."""
-    deadline = time.time() + timeout_s
+    start_time = time.time()
+    deadline = start_time + timeout_s
+    last_logged_elapsed = -1
+    consecutive_describe_failures = 0
+    max_consecutive_describe_failures = 3
+
     while True:
         describe_cmd = (
             f"gcloud ai custom-jobs describe {job_id} "
@@ -96,9 +133,17 @@ def _poll_job_state(project_id, region, job_id, timeout_s, poll_interval_s):
         )
         data, err = _run_json(describe_cmd)
         if data is None:
-            return "OTHER_FAILURE", f"describe failed: {err}"
+            consecutive_describe_failures += 1
+            if consecutive_describe_failures < max_consecutive_describe_failures:
+                print(f"  [gcp_job_utils] Warning: describe '{job_id}' in '{region}' failed ({err}). Retrying poll ({consecutive_describe_failures}/{max_consecutive_describe_failures})...")
+                time.sleep(min(poll_interval_s, 5))
+                continue
+            return "RETRYABLE_FAILURE", f"describe failed repeatedly: {err}"
 
+        consecutive_describe_failures = 0
         state = data.get("state", "")
+        elapsed = int(time.time() - start_time)
+
         if state in ("JOB_STATE_RUNNING", "JOB_STATE_SUCCEEDED"):
             return "RUNNING", state
         if state == "JOB_STATE_FAILED":
@@ -108,6 +153,11 @@ def _poll_job_state(project_id, region, job_id, timeout_s, poll_interval_s):
             return "OTHER_FAILURE", error_message or "unknown failure"
         if state == "JOB_STATE_CANCELLED":
             return "OTHER_FAILURE", "job was cancelled"
+
+        # Log status every ~60s so user sees clear progress
+        if elapsed // 60 > last_logged_elapsed // 60 and elapsed > 0:
+            last_logged_elapsed = elapsed
+            print(f"  [gcp_job_utils] Job '{job_id}' in '{region}' state: {state} (elapsed: {elapsed}s / {timeout_s}s)")
 
         if time.time() >= deadline:
             return "TIMEOUT", f"still '{state}' after {timeout_s}s"
@@ -127,7 +177,7 @@ def submit_custom_job_with_fallback(
     primary_region="us-central1",
     fallback_regions=None,
     use_spot=None,
-    per_region_timeout_s=360,
+    per_region_timeout_s=600,
     poll_interval_s=20,
 ):
     """Submit a Vertex AI custom job, retrying in fallback regions on capacity errors.
@@ -142,6 +192,7 @@ def submit_custom_job_with_fallback(
     isn't a capacity shortage.
     """
     candidate_regions = build_candidate_regions(primary_region, fallback_regions)
+    print(f"  [gcp_job_utils] Candidate regions queue ({len(candidate_regions)} regions): {', '.join(candidate_regions)}")
 
     if use_spot is None:
         use_spot = os.getenv("GCP_USE_SPOT", "false").lower() in ("true", "1", "yes")
@@ -150,7 +201,6 @@ def submit_custom_job_with_fallback(
     if command:
         container_spec["command"] = list(command)
 
-    current_spot = use_spot
     job_spec = {
         "workerPoolSpecs": [
             {
@@ -164,7 +214,7 @@ def submit_custom_job_with_fallback(
             }
         ],
         "scheduling": {
-            "strategy": "SPOT" if current_spot else "STANDARD",
+            "strategy": "SPOT" if use_spot else "STANDARD",
             "restartJobOnWorkerRestart": False,
         },
     }
@@ -173,6 +223,8 @@ def submit_custom_job_with_fallback(
 
     attempts = []
     for region in candidate_regions:
+        current_spot = use_spot
+        job_spec["scheduling"]["strategy"] = "SPOT" if current_spot else "STANDARD"
         print(f"  [gcp_job_utils] Attempting region '{region}' (strategy: {job_spec['scheduling']['strategy']})...")
         config_path = None
         try:

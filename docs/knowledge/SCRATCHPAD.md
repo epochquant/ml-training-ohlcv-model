@@ -15,10 +15,10 @@
 ## 3. Pending Tasks & Next Steps
 - [x] Create multi-assistant persistent memory structure in `docs/knowledge/`.
 - [x] Generate `AGENTS.md`, `GEMINI.md`, `CLAUDE.md`, and `.github/copilot-instructions.md`.
-- [x] Fix initial candle gap (+6%/-9%) and enforce OHLC physical geometry in `model/high_volatility/normalization.py` on branch `feature/high_volatile_1000ratusdt`.
+- [x] Fix initial candle gap (+6%/-9%) and enforce OHLC physical geometry in `model/high_volatility/normalization.py`.
 - [x] Add dedicated unit tests for 1000RATSUSDT breakout continuity (`tests/test_1000rats_high_volatility.py`).
-- [x] Fix Vertex AI resource allocation retry loops, job cancellation, service account, and fallback logic in `launch_high_volatility_job.py` and `gcp_job_utils.py`.
-- [x] Fix `NameError: name 'F' is not defined` in `training/train_predictor_hv.py` loss computation.
+- [x] Implement drop-in High-Volatility time-series inference engine (`src/inference/predict_time_series_hv.py`) and FastAPI chart router (`src/inference/fastapi_time_series_router.py`) preserving 100% endpoint and schema compatibility.
+- [x] Add unit tests for time-series inference pipeline (`tests/test_inference_hv.py`) — 21/21 tests passing.
 - [ ] Document foundational Kronos architecture specifics in `kronos_architecture.md`.
 - [ ] Document high-volatility adjustments (volume zeroing, short classification) in `high_volatility_adaptations.md`.
 - [ ] Benchmark latest training run against baseline.
