@@ -158,3 +158,32 @@ def test_hv_kronos_forward_and_embedding():
         s1_dec, ctx = model.decode_s1(s1_ids, s2_ids, stamp=stamp, regime=regime)
         assert s1_dec.shape == (batch_size, seq_len, 64)
         assert ctx.shape == (batch_size, seq_len, 64)
+
+
+def test_compute_weighted_hv_loss():
+    from training.train_predictor_hv import compute_weighted_hv_loss
+    from unittest.mock import MagicMock
+
+    model_head = MagicMock()
+    model_head.vocab_s1 = 64
+    model_head.vocab_s2 = 64
+
+    batch_size = 2
+    seq_len = 16
+    vocab_size = 64
+
+    s1_logits = torch.randn(batch_size, seq_len, vocab_size)
+    s2_logits = torch.randn(batch_size, seq_len, vocab_size)
+    logits = (s1_logits, s2_logits)
+
+    s1_targets = torch.randint(0, vocab_size, (batch_size, seq_len))
+    s2_targets = torch.randint(0, vocab_size, (batch_size, seq_len))
+    targets = (s1_targets, s2_targets)
+
+    batch_x = torch.randn(batch_size, seq_len + 1, 6)
+
+    loss, s1_loss, s2_loss = compute_weighted_hv_loss(model_head, logits, targets, batch_x=batch_x, asym_weight=2.5)
+    assert not torch.isnan(loss)
+    assert not torch.isnan(s1_loss)
+    assert not torch.isnan(s2_loss)
+    assert loss > 0

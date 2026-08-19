@@ -4,6 +4,7 @@ import time
 from time import gmtime, strftime
 import torch.distributed as dist
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP

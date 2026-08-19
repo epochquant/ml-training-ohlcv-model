@@ -37,6 +37,8 @@ def parse_args():
     parser.add_argument("--region", type=str, help="GCP Region (e.g., us-central1, us-east1)")
     parser.add_argument("--gpu", type=str, choices=["t4", "l4", "T4", "L4"], default=None, help="GPU accelerator (t4: NVIDIA T4 [cheapest & high availability], l4: NVIDIA L4)")
     parser.add_argument("--spot", action="store_true", default=False, help="Use Spot/Preemptible GPU instances (default: False, runs On-Demand)")
+    parser.add_argument("--timeout-per-region", type=int, default=360, help="Max timeout (in seconds) to wait for job placement per region before trying fallback (default: 360s)")
+    parser.add_argument("--fallback-regions", type=str, help="Comma-separated list of fallback regions (e.g., us-east1,us-east4,us-west1)")
     parser.add_argument("--non-interactive", action="store_true", help="Run without interactive prompts")
     return parser.parse_args()
 
@@ -47,11 +49,16 @@ def main():
     project_id = get_env_var("GCP_PROJECT_ID", "dev-gemini-ai")
     repository_name = get_env_var("ARTIFACT_REGISTRY_IMAGE_PROJECT", "ohlcv-model-training")
     region = args.region or get_env_var("GCP_REGION", "us-central1")
+    service_account = get_env_var("GCP_SERVICE_ACCOUNT", "kronos-notebook-sa@dev-gemini-ai.iam.gserviceaccount.com")
     default_bucket = get_env_var("GCS_BUCKET_NAME", "gs://epochquant-training")
     container_image = get_env_var(
         "ARTIFACT_REGISTRY_IMAGE_HV",
         f"{region}-docker.pkg.dev/{project_id}/{repository_name}/ohlcv-model-training-hv:latest",
     )
+
+    fallback_regions = None
+    if args.fallback_regions:
+        fallback_regions = [r.strip() for r in args.fallback_regions.split(",") if r.strip()]
 
     if args.non_interactive:
         csv_file = args.csv
@@ -131,6 +138,9 @@ def main():
     print(f" -> Primary Region: {region}")
     print(f" -> Container Image: {container_image}")
     print(f" -> GPU: {gpu_display} ({gpu_tier} Instance)")
+    if service_account:
+        print(f" -> Service Account: {service_account}")
+    print(f" -> Timeout per region: {args.timeout_per_region}s")
 
     try:
         placed_region, job_resource = submit_custom_job_with_fallback(
@@ -141,8 +151,12 @@ def main():
             accelerator_count=1,
             container_image=container_image,
             container_args=["--symbol", symbol_upper, "--dataset-gs-uri", gcs_dataset_uri, "--non-interactive"],
+            command=None,
+            service_account=service_account,
             primary_region=region,
+            fallback_regions=fallback_regions,
             use_spot=use_spot,
+            per_region_timeout_s=args.timeout_per_region,
         )
         print(f"\n=======================================================")
         print(f" Success! Container Job '{job_name}' submitted.")
@@ -151,6 +165,35 @@ def main():
         print(f" Outputs saved to: {bucket}/high-volatility/models/")
         print(f"=======================================================\n")
     except RuntimeError as e:
+        # If L4 failed in all regions, offer attempt with T4 if running interactively or if auto fallback triggered
+        if gpu_choice == "L4":
+            print(f"\n[Warning] All regions exhausted for NVIDIA L4 ({e}). Trying fallback to high-availability NVIDIA T4...")
+            try:
+                placed_region, job_resource = submit_custom_job_with_fallback(
+                    project_id=project_id,
+                    job_name=f"{job_name}-t4-fallback",
+                    machine_type="n1-standard-4",
+                    accelerator_type="NVIDIA_TESLA_T4",
+                    accelerator_count=1,
+                    container_image=container_image,
+                    container_args=["--symbol", symbol_upper, "--dataset-gs-uri", gcs_dataset_uri, "--non-interactive"],
+                    command=None,
+                    service_account=service_account,
+                    primary_region=region,
+                    fallback_regions=fallback_regions,
+                    use_spot=use_spot,
+                    per_region_timeout_s=args.timeout_per_region,
+                )
+                print(f"\n=======================================================")
+                print(f" Success! Container Job '{job_name}-t4-fallback' submitted.")
+                print(f" Placed in region: {placed_region}")
+                print(f" Vertex AI is running container on {gpu_tier} 1x NVIDIA T4 (n1-standard-4).")
+                print(f" Outputs saved to: {bucket}/high-volatility/models/")
+                print(f"=======================================================\n")
+                return
+            except RuntimeError as err_t4:
+                print(f"\nError launching Vertex AI Custom Job (T4 Fallback also failed): {err_t4}")
+                sys.exit(1)
         print(f"\nError launching Vertex AI Custom Job: {e}")
         sys.exit(1)
 

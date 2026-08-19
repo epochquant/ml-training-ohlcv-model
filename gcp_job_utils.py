@@ -28,16 +28,14 @@ import time
 import yaml
 
 # Verified against `gcloud compute accelerator-types list --filter="name=nvidia-l4"`
-# on 2026-08-12 (returned us-central1, us-east1, us-east4, us-west1,
-# plus several non-US regions). Re-verify before relying on this list long-term —
 # GPU availability per region changes over time.
-DEFAULT_FALLBACK_REGIONS = ["us-east1", "us-east4", "us-west1"]
+# Note: us-west4 does not support g2-standard-4 (NVIDIA L4).
+DEFAULT_FALLBACK_REGIONS = ["us-east1", "us-east4", "us-west1", "europe-west4"]
 
 # Signatures of errors that are genuinely our fault (bad args, bad image,
 # missing permissions) and won't be fixed by trying a different region.
 # Everything else — including capacity exhaustion AND Vertex AI's generic
-# "Internal error occurred for the current attempt" (which is what the final
-# retry of the original incident hit) — is treated as retryable, since a
+# "Internal error occurred for the current attempt" — is treated as retryable, since a
 # transient platform failure is exactly the kind of thing a region hop should
 # recover from, and we can't enumerate every transient error string in advance.
 _FATAL_ERROR_PATTERNS = (
@@ -76,6 +74,16 @@ def build_candidate_regions(primary_region, fallback_regions=None):
             seen.add(region)
             unique.append(region)
     return unique
+
+
+def _cancel_job(project_id, region, job_id):
+    """Cancel a queued or stuck job in GCP before trying another region."""
+    cancel_cmd = (
+        f"gcloud ai custom-jobs cancel {job_id} "
+        f"--project={project_id} --region={region} --quiet"
+    )
+    print(f"  [gcp_job_utils] Cancelling job '{job_id}' in region '{region}'...")
+    subprocess.run(cancel_cmd, shell=True, capture_output=True, text=True)
 
 
 def _poll_job_state(project_id, region, job_id, timeout_s, poll_interval_s):
@@ -119,8 +127,8 @@ def submit_custom_job_with_fallback(
     primary_region="us-central1",
     fallback_regions=None,
     use_spot=None,
-    per_region_timeout_s=25 * 60,
-    poll_interval_s=30,
+    per_region_timeout_s=360,
+    poll_interval_s=20,
 ):
     """Submit a Vertex AI custom job, retrying in fallback regions on capacity errors.
 
@@ -157,7 +165,7 @@ def submit_custom_job_with_fallback(
         ],
         "scheduling": {
             "strategy": "SPOT" if current_spot else "STANDARD",
-            "disableRetries": True,
+            "restartJobOnWorkerRestart": False,
         },
     }
     if service_account:
@@ -180,11 +188,20 @@ def submit_custom_job_with_fallback(
             )
             data, err = _run_json(create_cmd)
             if data is None:
+                err_lower = (err or "").lower()
                 # If submission failed due to preemptible/spot quota exhaustion, auto-fallback to STANDARD
-                if current_spot and ("preemptible" in (err or "").lower() or "custom_model_training_preemptible" in (err or "").lower()):
+                if current_spot and ("preemptible" in err_lower or "custom_model_training_preemptible" in err_lower):
                     print(f"  [gcp_job_utils] Spot/Preemptible GPU quota unavailable in '{region}'. Falling back to STANDARD (On-Demand)...")
                     job_spec["scheduling"]["strategy"] = "STANDARD"
                     current_spot = False
+                    with open(config_path, "w") as f_retry:
+                        yaml.safe_dump(job_spec, f_retry)
+                    data, err = _run_json(create_cmd)
+                # If submission failed due to Standard On-Demand quota exhaustion, auto-fallback to SPOT
+                elif not current_spot and ("resource_exhausted" in err_lower or "quota" in err_lower or "429" in err_lower):
+                    print(f"  [gcp_job_utils] Standard On-Demand GPU quota exceeded in '{region}'. Auto-switching to SPOT strategy...")
+                    job_spec["scheduling"]["strategy"] = "SPOT"
+                    current_spot = True
                     with open(config_path, "w") as f_retry:
                         yaml.safe_dump(job_spec, f_retry)
                     data, err = _run_json(create_cmd)
@@ -208,10 +225,12 @@ def submit_custom_job_with_fallback(
                 print(f"  [gcp_job_utils] Job '{job_id}' is running in '{region}'.")
                 return region, job_resource
             if outcome == "OTHER_FAILURE":
+                _cancel_job(project_id, region, job_id)
                 raise RuntimeError(
                     f"Job '{job_id}' in region '{region}' failed for a non-retryable reason: {detail}"
                 )
-            # RETRYABLE_FAILURE or TIMEOUT: this region can't (yet) place the job.
+            # RETRYABLE_FAILURE or TIMEOUT: cancel the job in this region and try next region
+            _cancel_job(project_id, region, job_id)
             attempts.append((region, detail))
             print(f"  [gcp_job_utils] Region '{region}' unavailable ({detail}). Trying next region...")
         finally:
@@ -220,3 +239,4 @@ def submit_custom_job_with_fallback(
 
     summary = "; ".join(f"{region}: {reason}" for region, reason in attempts)
     raise RuntimeError(f"All candidate regions exhausted for job '{job_name}'. {summary}")
+

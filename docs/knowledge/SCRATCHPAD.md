@@ -17,6 +17,8 @@
 - [x] Generate `AGENTS.md`, `GEMINI.md`, `CLAUDE.md`, and `.github/copilot-instructions.md`.
 - [x] Fix initial candle gap (+6%/-9%) and enforce OHLC physical geometry in `model/high_volatility/normalization.py` on branch `feature/high_volatile_1000ratusdt`.
 - [x] Add dedicated unit tests for 1000RATSUSDT breakout continuity (`tests/test_1000rats_high_volatility.py`).
+- [x] Fix Vertex AI resource allocation retry loops, job cancellation, service account, and fallback logic in `launch_high_volatility_job.py` and `gcp_job_utils.py`.
+- [x] Fix `NameError: name 'F' is not defined` in `training/train_predictor_hv.py` loss computation.
 - [ ] Document foundational Kronos architecture specifics in `kronos_architecture.md`.
 - [ ] Document high-volatility adjustments (volume zeroing, short classification) in `high_volatility_adaptations.md`.
 - [ ] Benchmark latest training run against baseline.
