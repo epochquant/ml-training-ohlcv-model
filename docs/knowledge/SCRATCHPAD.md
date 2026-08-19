@@ -15,10 +15,12 @@
 ## 3. Pending Tasks & Next Steps
 - [x] Create multi-assistant persistent memory structure in `docs/knowledge/`.
 - [x] Generate `AGENTS.md`, `GEMINI.md`, `CLAUDE.md`, and `.github/copilot-instructions.md`.
+- [x] Fix initial candle gap (+6%/-9%) and enforce OHLC physical geometry in `model/high_volatility/normalization.py` on branch `feature/high_volatile_1000ratusdt`.
+- [x] Add dedicated unit tests for 1000RATSUSDT breakout continuity (`tests/test_1000rats_high_volatility.py`).
 - [ ] Document foundational Kronos architecture specifics in `kronos_architecture.md`.
 - [ ] Document high-volatility adjustments (volume zeroing, short classification) in `high_volatility_adaptations.md`.
 - [ ] Benchmark latest training run against baseline.
 
 ## 4. Current Hypotheses & Open Questions
+- **Initial Candle Continuity**: Anchoring continuation Open[0] to previous Close[-1] prevents artificial jumps from multi-column historical divergence during vertical breakouts.
 - **Volume Handling**: Zeroing volume prevents scale mismatch in discrete BSQ tokens, but does auxiliary feature concatenation re-introduce useful signal without disrupting tokenization?
-- **Extreme Spikes**: How do rolling normalization boundaries behave during multi-sigma flash crashes on 1m timeframe?
